@@ -32,7 +32,7 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
-### Unreleased
+### v1.3.0 (September 26, 2026)
 - **Security**: SSH server host keys are verified (trust on first use). A new server's
   `SHA256:` fingerprint is shown for you to confirm; a changed key is refused. `hosts` command
   lists and forgets trusted keys
@@ -759,9 +759,10 @@ Disconnected from SSH server
 ### Release Firmware Image
 
 A ready-to-deploy **merged binary** includes the bootloader, partition table, and application:
-- **File**: `PocketSSH-v<version>-release.bin` (e.g. `PocketSSH-v1.2.0-release.bin`)
+- **File**: `PocketSSH-v<version>-release.bin` (e.g. `PocketSSH-v1.3.0-release.bin`)
 - **Where to get it**:
-  - **Releases**: attached to each GitHub release (built automatically when a `v*` tag is pushed)
+  - **Releases**: the [Releases page](../../releases) has the image and its `.sha256` for each version
+    (published automatically when a new version reaches `main`)
   - **Any commit**: open the *Build firmware* workflow run in the Actions tab and download the
     `PocketSSH-v<version>` artifact
   - **Local build**: `build/PocketSSH-v<version>-release.bin` (see [Building from Source](#building-from-source))
@@ -777,13 +778,13 @@ Flash firmware via browser using ESP Web Flasher:
 1. Visit: https://espressif.github.io/esptool-js/
 2. Connect ESP32-S3 device via USB
 3. Click "Connect" and select serial port
-4. Add file: `PocketSSH-v1.2.0-release.bin` at offset `0x0`
+4. Add file: `PocketSSH-v1.3.0-release.bin` at offset `0x0`
 5. Click "Program" to flash
 
 ### Command Line Installation
 
 ```bash
-esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 build/PocketSSH-v1.2.0-release.bin
+esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 build/PocketSSH-v1.3.0-release.bin
 ```
 
 ## Building from Source
@@ -793,7 +794,7 @@ Requires **ESP-IDF v5.5.1** (other 5.5.x patch releases should work).
 ```bash
 . $IDF_PATH/export.sh
 idf.py build
-idf.py merge-bin -o PocketSSH-v1.2.0-release.bin   # -> build/PocketSSH-v1.2.0-release.bin
+idf.py merge-bin -o PocketSSH-v1.3.0-release.bin   # -> build/PocketSSH-v1.3.0-release.bin
 idf.py -p /dev/ttyACM0 flash monitor               # or flash the merged image at 0x0
 ```
 
@@ -820,14 +821,24 @@ build, test on a T-Deck, and commit both files. The *Dependency check* workflow 
 
 | Workflow | When | What it does | Blocks merges? |
 |---|---|---|---|
-| **Build firmware** (`build.yml`) | Push to `main`, pull requests, `v*` tags | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin`. On a `v*` tag it also creates a GitHub release with the image | Yes - the firmware must build |
+| **Build firmware** (`build.yml`) | Push to `main` / `integration`, pull requests, `v*` tags | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin` as a workflow artifact. On `main`, a new `PROJECT_VER` is published as a GitHub release with notes, the image and its SHA-256 (see *Releasing* below) | Yes - the firmware must build |
 | **Code quality** (`code-quality.yml`) | Push to `main`, pull requests | cppcheck static analysis, flawfinder security lint, and compiler warnings in `main/`, shown as annotations on the changed lines and in each job's summary | No - report only |
 | **Dependency check** (`dependency-check.yml`) | Weekly, and when pins change | Compares pinned components and ESP-IDF with the latest releases | No - report only |
 | **Dependabot** (`.github/dependabot.yml`) | Weekly | Opens PRs to update the GitHub Actions used above | - |
 
-**Cutting a release**: set `PROJECT_VER` in the top-level `CMakeLists.txt` (e.g. `1.3.0`), add a
-Version History entry, commit, then tag and push: `git tag v1.3.0 && git push origin v1.3.0`.
-The build fails if the tag doesn't match `PROJECT_VER`.
+**Releasing**: releases are automatic from `main`.
+
+1. On a branch (e.g. `integration`), set `PROJECT_VER` in the top-level `CMakeLists.txt`
+   to the new version (e.g. `1.4.0`).
+2. Add a `### v1.4.0 (<date>)` section to [Version History](#version-history). It becomes
+   the release notes, and the build fails if it's missing.
+3. Merge to `main`. The *Build firmware* workflow sees that `v1.4.0` hasn't been released,
+   builds the firmware, creates the `v1.4.0` tag and a GitHub release titled
+   "PocketSSH v1.4.0" with the notes, `PocketSSH-v1.4.0-release.bin` and its `.sha256`.
+
+Pushes to `main` that don't change `PROJECT_VER` only build (the run notes the version is
+already released). Pushing a `v<version>` tag or running the workflow manually on `main` also
+releases; a tag that doesn't match `PROJECT_VER` fails the build.
 
 ## Credits
 
