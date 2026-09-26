@@ -9,6 +9,8 @@
 
 #include "lvgl.h"
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -16,10 +18,6 @@
 #include "libssh2.h"
 #include "battery_measurement.hpp"
 #include "connection_profiles.hpp"
-
-#define SSH_MAX_LINE_LENGTH 128
-#define SSH_MAX_LINES 100
-#define SSH_BUFFER_SIZE 4096
 
 class SSHTerminal
 {
@@ -33,7 +31,6 @@ public:
     esp_err_t connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len,
                                const char* passphrase = NULL);
     esp_err_t disconnect();
-    bool is_connected();
     
     void append_text(const char* text);
     void clear_terminal();
@@ -41,21 +38,17 @@ public:
     void send_command(const char* cmd);
     void navigate_history(int direction);
     void delete_current_history_entry();
-    void send_current_history_command();
     void move_cursor_left();
     void move_cursor_right();
     void move_cursor_home();
     void move_cursor_end();
     
     esp_err_t init_wifi(const char* ssid, const char* password);
-    bool is_wifi_connected();
     void disconnect_wifi();
     void wifi_link_lost();
     
-    // Runs once after the splash screen is dismissed (WiFi auto-connect)
+    // Runs once after boot, from the input task (WiFi auto-connect)
     void run_startup_tasks();
-    
-    lv_obj_t* get_screen() { return terminal_screen; }
     
     void update_status_bar();
     
@@ -76,7 +69,9 @@ private:
         WifiMenu, WifiPickScan, WifiHiddenSsid, WifiPassword, WifiSave,
         WifiPickSaved, WifiConfirmForget,
         // Vault (master PIN)
-        VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset
+        VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset,
+        // SSH host key trust (known_hosts.cpp)
+        HostTrust, HostConfirmForget
     };
     enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, ChangePin };
     enum class SecretChange { Keep, Set, Clear };
@@ -84,6 +79,20 @@ private:
         std::string ssid;
         int rssi;
         bool open;
+    };
+    // A connection that has completed the SSH handshake and is waiting for the
+    // user to trust the server's host key; credentials are wiped once used.
+    struct PendingSsh {
+        std::string host;
+        int port = 22;
+        std::string username;
+        bool use_key = false;
+        std::string password;          // Password auth
+        const char* key_data = NULL;   // Points into loaded_keys (stable while connected)
+        size_t key_len = 0;
+        std::string passphrase;        // Key passphrase, empty if none
+        std::string fingerprint;       // "SHA256:..." of the server host key
+        std::string key_type;
     };
     struct ProfileWizard {
         WizardStep step = WizardStep::None;
@@ -140,9 +149,10 @@ private:
     int ssh_socket;
     LIBSSH2_SESSION *session;
     LIBSSH2_CHANNEL *channel;
-    
-    char* hostname;
-    int port_number;
+    SemaphoreHandle_t ssh_mutex;      // Serializes all libssh2 calls on session/channel
+    uint32_t ssh_generation;          // Bumped on disconnect (under ssh_mutex) so a stale receive task exits
+    PendingSsh pending_ssh;
+    std::string forget_host;          // host:port awaiting 'hosts forget' confirmation
     
     // SSH key storage: keyname -> key content
     std::map<std::string, std::string> loaded_keys;
@@ -152,14 +162,12 @@ private:
     std::string wifi_ssid;
     ProfileWizard wizard;
     
-    void update_terminal_display();
     void update_input_display();
     void process_received_data(const char* data, size_t len);
     void flush_display_buffer();
     
     void load_history_from_nvs();
     void save_history_to_nvs();
-    void clear_history_nvs();
     std::string strip_ansi_codes(const char* data, size_t len);
     void send_special_key(const char* sequence);
     void create_side_panel();
@@ -173,6 +181,10 @@ private:
     static void ssh_receive_task(void* param);
     
     static int waitsocket(int socket_fd, LIBSSH2_SESSION *session);
+    esp_err_t ssh_begin(PendingSsh&& target);
+    esp_err_t ssh_finish();
+    void ssh_teardown();
+    void wipe_pending_ssh();
     esp_err_t ssh_authenticate(const char* username, const char* password);
     esp_err_t ssh_authenticate_pubkey(const char* username, const char* privkey_data, size_t privkey_len,
                                       const char* passphrase);
@@ -216,6 +228,15 @@ private:
     void wifi_auto_connect();
     bool wifi_step_prompt();
     bool wifi_step_input(const std::string& raw, const std::string& input);
+    
+    // SSH host key verification, trust on first use (known_hosts.cpp)
+    enum class HostKeyStatus { Match, Unknown, Mismatch, Error };
+    HostKeyStatus check_host_key(const std::string& host, int port, std::string& fingerprint, std::string& key_type);
+    esp_err_t save_host_key(const std::string& host, int port, const std::string& key_type,
+                            const std::string& fingerprint);
+    void handle_hosts_command(const std::string& command);
+    bool host_step_prompt();
+    bool host_step_input(const std::string& raw, const std::string& input);
     
     // Master PIN / encrypted password vault (vault_menu.cpp)
     void handle_vault_command(const std::string& command);

@@ -10,6 +10,7 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -30,16 +31,6 @@
 
 #include "lvgl.h"
 
-// Pepboy splash screen images
-LV_IMG_DECLARE(pepboy_0);
-LV_IMG_DECLARE(pepboy_1);
-LV_IMG_DECLARE(pepboy_2);
-LV_IMG_DECLARE(pepboy_3);
-LV_IMG_DECLARE(pepboy_4);
-LV_IMG_DECLARE(pepboy_5);
-LV_IMG_DECLARE(pepboy_6);
-LV_IMG_DECLARE(pepboy_7);
-
 #if defined(BSP_LCD_DRAW_BUFF_SIZE)
 #define DRAW_BUF_SIZE BSP_LCD_DRAW_BUFF_SIZE
 #else
@@ -55,77 +46,10 @@ static i2c_master_bus_handle_t i2c_handle;
 static lv_obj_t *ssh_screen;
 static SSHTerminal *ssh_terminal = NULL;
 
-// Splash screen variables
-static lv_obj_t *splash_screen = NULL;
-static lv_obj_t *splash_img = NULL;
-static lv_timer_t *splash_timer = NULL;
-static int splash_frame = 0;
-static const lv_image_dsc_t* pepboy_frames[] = {
-    &pepboy_0, &pepboy_1, &pepboy_2, &pepboy_3,
-    &pepboy_4, &pepboy_5, &pepboy_6, &pepboy_7
-};
-
-// Dismiss splash screen (called by touch or keyboard)
-void dismiss_splash_screen()
-{
-    if (splash_timer) {
-        lv_timer_delete(splash_timer);
-        splash_timer = NULL;
-    }
-    if (splash_screen) {
-        bsp_display_lock(0);
-        lv_scr_load(ssh_screen);
-        lv_obj_delete(splash_screen);
-        splash_screen = NULL;
-        bsp_display_unlock();
-    }
-}
-
-// Touch event handler for splash screen - skip on touch
-void splash_touch_cb(lv_event_t * e)
-{
-    dismiss_splash_screen();
-}
-
-// Splash screen animation callback
-void splash_timer_cb(lv_timer_t * timer)
-{
-    // Update to next frame
-    splash_frame++;
-    
-    // Wrap frame index (8 frames total) - loop indefinitely
-    if (splash_frame >= 8) {
-        splash_frame = 0;
-    }
-    
-    // Update image
-    lv_image_set_src(splash_img, pepboy_frames[splash_frame]);
-}
-
-void show_splash_screen()
-{
-    // Create splash screen
-    splash_screen = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(splash_screen, lv_color_black(), 0);
-    
-    // Add touch event to skip splash screen
-    lv_obj_add_event_cb(splash_screen, splash_touch_cb, LV_EVENT_PRESSED, NULL);
-    lv_obj_add_flag(splash_screen, LV_OBJ_FLAG_CLICKABLE);
-    
-    // Create image object centered on screen
-    splash_img = lv_image_create(splash_screen);
-    lv_image_set_src(splash_img, &pepboy_0);
-    lv_obj_align(splash_img, LV_ALIGN_CENTER, 0, 0);
-    
-    // Load splash screen
-    lv_scr_load(splash_screen);
-    
-    // Reset counter
-    splash_frame = 0;
-    
-    // Create timer for animation (100ms per frame for smooth walking animation)
-    splash_timer = lv_timer_create(splash_timer_cb, 150, NULL);
-}
+// Trackball events, handled by keypad_task so only one task runs the terminal
+// (menus, WiFi scans, crypto and SSH connects need a large stack)
+enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_ENTER, INPUT_DELETE };
+static QueueHandle_t input_events = NULL;
 
 void keypad_task(void *param)
 {
@@ -141,92 +65,72 @@ void keypad_task(void *param)
 
     while (1)
     {
-        // Once the splash screen is gone, run startup work (WiFi auto-connect)
-        if (startup_pending && !splash_screen && ssh_terminal && bsp_display_lock(0)) {
+        // First pass: startup work (WiFi auto-connect)
+        if (startup_pending && bsp_display_lock(0)) {
             startup_pending = false;
             ssh_terminal->run_startup_tasks();
             bsp_display_unlock();
         }
 
+        // Non-blocking display lock: keep rendering responsive, drop input if the display is busy
         uint32_t key = keyboard.get_key();
-        if (key)
-        {
-            ESP_LOGI("KEYPAD", "Key Pressed: %c", (unsigned char)key);
-
-            // If splash screen is active, dismiss it on any key press
-            if (splash_screen) {
-                dismiss_splash_screen();
-                vTaskDelay(pdMS_TO_TICKS(50));
-                continue;  // Skip processing this key
-            }
-
-            // Send key input to SSH terminal with display lock
-            if (ssh_terminal && ssh_screen) {
-                if (bsp_display_lock(0)) {
-                    ssh_terminal->handle_key_input((char)key);
-                    bsp_display_unlock();
-                }
-            }
+        if (key && bsp_display_lock(0)) {
+            ssh_terminal->handle_key_input((char)key);
+            bsp_display_unlock();
         }
-        vTaskDelay(pdMS_TO_TICKS(50)); // Shorter delay for better responsiveness
+
+        uint8_t event;
+        while (xQueueReceive(input_events, &event, 0) == pdTRUE) {
+            if (!bsp_display_lock(0)) {
+                continue;
+            }
+            switch (event) {
+                case INPUT_UP:     ssh_terminal->navigate_history(1); break;   // Older command / previous choice
+                case INPUT_DOWN:   ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
+                case INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
+                case INPUT_DELETE: ssh_terminal->delete_current_history_entry(); break;
+            }
+            bsp_display_unlock();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
 
+// Polls the trackball and queues events; the work happens in keypad_task
 void trackball_task(void *param)
 {
-    static bool last_up = true;
-    static bool last_down = true;
-    static bool last_press = true;
-    static uint32_t press_start_time = 0;
-    const uint32_t LONG_PRESS_MS = 1000; // 1 second for long press
-    
+    bool last_up = true;
+    bool last_down = true;
+    bool last_press = true;
+    TickType_t press_start = 0;
+    const TickType_t LONG_PRESS = pdMS_TO_TICKS(1000);
+
     while (1) {
         bool up = gpio_get_level(BOARD_TBOX_G01);
         bool down = gpio_get_level(BOARD_TBOX_G03);
         bool press = gpio_get_level(BOARD_BOOT_PIN);
-        
-        // Detect falling edge (button press)
+        uint8_t event;
+
         if (!up && last_up) {
-            // Non-blocking: prioritize screen updates, drop input if display is busy
-            if (ssh_terminal && bsp_display_lock(0)) {
-                ssh_terminal->navigate_history(1); // Older command
-                bsp_display_unlock();
-            }
+            event = INPUT_UP;
+            xQueueSend(input_events, &event, 0);
         }
         if (!down && last_down) {
-            // Non-blocking: prioritize screen updates, drop input if display is busy
-            if (ssh_terminal && bsp_display_lock(0)) {
-                ssh_terminal->navigate_history(-1); // Newer command
-                bsp_display_unlock();
-            }
+            event = INPUT_DOWN;
+            xQueueSend(input_events, &event, 0);
         }
-        
-        // Trackball press button handling
         if (!press && last_press) {
-            // Button just pressed - record start time
-            press_start_time = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            press_start = xTaskGetTickCount();
         } else if (press && !last_press) {
-            // Button released - check duration
-            uint32_t press_duration = (xTaskGetTickCount() * portTICK_PERIOD_MS) - press_start_time;
-            
-            if (ssh_terminal && bsp_display_lock(0)) {
-                if (press_duration >= LONG_PRESS_MS) {
-                    // Long press: Delete current history entry
-                    ESP_LOGI("TRACKBALL", "Long press detected (%lu ms) - deleting command", press_duration);
-                    ssh_terminal->delete_current_history_entry();
-                } else {
-                    // Short press: Execute current input (like Enter key)
-                    ESP_LOGI("TRACKBALL", "Short press detected (%lu ms) - executing current input", press_duration);
-                    ssh_terminal->handle_key_input('\n');
-                }
-                bsp_display_unlock();
-            }
+            // Long press deletes the shown history entry, short press is Enter
+            event = (xTaskGetTickCount() - press_start >= LONG_PRESS) ? INPUT_DELETE : INPUT_ENTER;
+            xQueueSend(input_events, &event, 0);
         }
-        
+
         last_up = up;
         last_down = down;
         last_press = press;
-        
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -362,12 +266,10 @@ extern "C" void app_main(void)
 
     bsp_display_lock(0);
 
-    // Show splash screen animation
-    show_splash_screen();
-
     // Use the terminal instance that already has loaded keys
     ssh_terminal = temp_terminal;
     ssh_screen = ssh_terminal->create_terminal_screen();
+    lv_screen_load(ssh_screen);
     
     // Display version and initial instructions
 #ifdef POCKETSSH_VERSION
@@ -396,10 +298,11 @@ extern "C" void app_main(void)
 
     bsp_display_unlock();
 
-    // Input tasks run the menus, which do WiFi scans, encryption and SSH connects
+    input_events = xQueueCreate(8, sizeof(uint8_t));
+
+    // keypad_task runs the terminal: menus, WiFi scans, encryption and SSH connects
     xTaskCreate(keypad_task, "keypad_task", 8192, NULL, 5, NULL);
-    
-    xTaskCreate(trackball_task, "trackball_task", 8192, NULL, 5, NULL);
+    xTaskCreate(trackball_task, "trackball_task", 2048, NULL, 5, NULL);
 }
 
 /*
@@ -431,14 +334,13 @@ void load_ssh_keys_from_sd(SSHTerminal* terminal)
     ESP_LOGI(TAG, "Mounting SD card...");
     
     // Configure SPI bus for SD card (T-Deck Plus uses SPI mode, not SDMMC)
-    spi_bus_config_t bus_cfg = {
-        .mosi_io_num = BOARD_SPI_MOSI,
-        .miso_io_num = BOARD_SPI_MISO,
-        .sclk_io_num = BOARD_SPI_SCK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
-    };
+    spi_bus_config_t bus_cfg = {};
+    bus_cfg.mosi_io_num = BOARD_SPI_MOSI;
+    bus_cfg.miso_io_num = BOARD_SPI_MISO;
+    bus_cfg.sclk_io_num = BOARD_SPI_SCK;
+    bus_cfg.quadwp_io_num = -1;
+    bus_cfg.quadhd_io_num = -1;
+    bus_cfg.max_transfer_sz = 4000;
     
     esp_err_t ret = spi_bus_initialize(SPI3_HOST, &bus_cfg, SPI_DMA_CH_AUTO);
     if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) {
@@ -555,6 +457,7 @@ void load_ssh_keys_from_sd(SSHTerminal* terminal)
         
         if (bytes_read != (size_t)file_size) {
             ESP_LOGE(TAG, "Failed to read complete key file: %s", entry->d_name);
+            memset(key_data, 0, file_size);
             free(key_data);
             continue;
         }
@@ -563,6 +466,7 @@ void load_ssh_keys_from_sd(SSHTerminal* terminal)
         
         // Load key into terminal's memory
         terminal->load_key_from_memory(entry->d_name, key_data, file_size);
+        memset(key_data, 0, file_size);  // Don't leave a copy of the private key in freed heap
         free(key_data);
         keys_loaded++;
     }

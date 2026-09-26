@@ -66,8 +66,8 @@ SSHTerminal::SSHTerminal()
       ssh_socket(-1),
       session(NULL),
       channel(NULL),
-      hostname(NULL),
-      port_number(22)
+      ssh_mutex(xSemaphoreCreateMutex()),
+      ssh_generation(0)
 {
     vTaskDelay(pdMS_TO_TICKS(100));
     
@@ -91,10 +91,7 @@ SSHTerminal::SSHTerminal()
 
 SSHTerminal::~SSHTerminal() 
 {
-    disconnect();
-    if (hostname) {
-        free(hostname);
-    }
+    ssh_teardown();
     if (cursor_blink_timer) {
         lv_timer_del(cursor_blink_timer);
     }
@@ -341,11 +338,6 @@ void SSHTerminal::refresh_display_now()
     }
 }
 
-bool SSHTerminal::is_wifi_connected()
-{
-    return wifi_connected;
-}
-
 lv_obj_t* SSHTerminal::create_terminal_screen()
 {
     terminal_screen = lv_obj_create(NULL);
@@ -485,6 +477,47 @@ void SSHTerminal::clear_terminal()
     }
 }
 
+// Masks the password/passphrase argument of local commands that take one
+// (connect SSID PASS, ssh HOST PORT USER PASS, sshkey ... KEYFILE PASSPHRASE),
+// so it is never echoed on screen or written to command history.
+static std::string redact_secrets(const std::string& cmd, bool* has_secret)
+{
+    *has_secret = false;
+    size_t secret_arg;
+    if (cmd.rfind("connect ", 0) == 0) {
+        secret_arg = 1;
+    } else if (cmd.rfind("ssh ", 0) == 0) {
+        secret_arg = 3;
+    } else if (cmd.rfind("sshkey ", 0) == 0) {
+        secret_arg = 4;
+    } else {
+        return cmd;
+    }
+
+    // Find where each argument starts, honouring "quoted strings"
+    size_t arg = 0;
+    bool in_token = false;
+    bool in_quotes = false;
+    for (size_t i = cmd.find(' '); i < cmd.length(); i++) {
+        char c = cmd[i];
+        if (c == ' ' && !in_quotes) {
+            in_token = false;
+            continue;
+        }
+        if (!in_token) {
+            if (arg++ == secret_arg) {
+                *has_secret = true;
+                return cmd.substr(0, i) + "****";
+            }
+            in_token = true;
+        }
+        if (c == '"') {
+            in_quotes = !in_quotes;
+        }
+    }
+    return cmd;
+}
+
 void SSHTerminal::handle_key_input(char key)
 {
     if (wizard_active() && (key == '\n' || key == '\r')) {
@@ -498,11 +531,16 @@ void SSHTerminal::handle_key_input(char key)
         current_input.clear();
         cursor_pos = 0;
         append_text("\nCancelled.\n");
+        if (wizard.step == WizardStep::HostTrust) {
+            ssh_teardown();
+        }
         wizard_reset();
     } else if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
+            bool has_secret = false;
+            std::string shown = redact_secrets(current_input, &has_secret);
             append_text("\n> ");
-            append_text(current_input.c_str());
+            append_text(shown.c_str());
             append_text("\n");
             
             if (current_input == "connect" || current_input == "wifi" || current_input.rfind("wifi ", 0) == 0) {
@@ -510,6 +548,9 @@ void SSHTerminal::handle_key_input(char key)
             }
             else if (current_input == "vault" || current_input.rfind("vault ", 0) == 0) {
                 handle_vault_command(current_input);
+            }
+            else if (current_input == "hosts" || current_input.rfind("hosts ", 0) == 0) {
+                handle_hosts_command(current_input);
             }
             else if (current_input.rfind("connect ", 0) == 0) {
                 // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
@@ -549,10 +590,15 @@ void SSHTerminal::handle_key_input(char key)
                     } else {
                         append_text("WiFi connection failed!\n");
                     }
+                    vault::wipe(password);
                 } else {
                     append_text("Usage: connect <SSID> <PASSWORD>\n");
                     append_text("  Use quotes for SSIDs/passwords with spaces: connect \"My WiFi\" password\n");
                 }
+                for (auto& a : args) {
+                    vault::wipe(a);
+                }
+                vault::wipe(arg);
             }
             else if (current_input.rfind("ssh ", 0) == 0) {
                 std::vector<std::string> parts;
@@ -572,9 +618,14 @@ void SSHTerminal::handle_key_input(char key)
                     std::string pass = parts[4];
                     
                     connect(host.c_str(), port, user.c_str(), pass.c_str());
+                    vault::wipe(pass);
                 } else {
                     append_text("Usage: ssh <HOST> <PORT> <USER> <PASS>\n");
                 }
+                for (auto& part : parts) {
+                    vault::wipe(part);
+                }
+                vault::wipe(temp);
             }
             else if (current_input.rfind("sshkey ", 0) == 0) {
                 std::vector<std::string> parts;
@@ -619,10 +670,15 @@ void SSHTerminal::handle_key_input(char key)
                         }
                         append_text("\n");
                     }
+                    vault::wipe(passphrase);
                 } else {
                     append_text("Usage: sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]\n");
                     append_text("  Example: sshkey 192.168.1.100 22 pi default.pem\n");
                 }
+                for (auto& part : parts) {
+                    vault::wipe(part);
+                }
+                vault::wipe(temp);
             }
             else if (current_input == "profile" || current_input == "profiles" ||
                      current_input.rfind("profile ", 0) == 0 || current_input.rfind("profiles ", 0) == 0) {
@@ -632,7 +688,11 @@ void SSHTerminal::handle_key_input(char key)
                 disconnect_wifi();
             }
             else if (current_input == "exit") {
-                disconnect();
+                if (session || ssh_socket >= 0) {
+                    disconnect();
+                } else {
+                    append_text("SSH not connected\n");
+                }
             }
             else if (current_input == "clear") {
                 clear_terminal();
@@ -651,6 +711,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("  profile list|add - List or create profiles\n");
                 append_text("  profile connect|edit|delete [NAME|#]\n");
                 append_text("  vault - PIN status | vault lock|unlock|pin|reset\n");
+                append_text("  hosts - Trusted server keys | hosts forget [HOST|#]\n");
                 append_text("  disconnect - Disconnect WiFi\n");
                 append_text("  exit - Disconnect SSH\n");
                 append_text("  clear - Clear terminal\n");
@@ -662,13 +723,16 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("Unknown command. Type 'help' for commands.\n");
             }
             
-            auto it = std::find(command_history.begin(), command_history.end(), current_input);
-            if (it != command_history.end()) {
-                command_history.erase(it);
+            // Commands carrying a password stay out of history (it is stored in NVS)
+            if (!has_secret) {
+                auto it = std::find(command_history.begin(), command_history.end(), current_input);
+                if (it != command_history.end()) {
+                    command_history.erase(it);
+                }
+                command_history.push_back(current_input);
+                history_needs_save = true;
             }
-            command_history.push_back(current_input);
-            history_needs_save = true;
-            current_input.clear();
+            vault::wipe(current_input);
             cursor_pos = 0;
             history_index = -1;
         }
@@ -774,7 +838,6 @@ void SSHTerminal::input_touch_event_cb(lv_event_t* e)
     terminal->cursor_visible = true;
     terminal->update_input_display();
     
-    ESP_LOGI(TAG, "Cursor moved to position: %d", terminal->cursor_pos);
 }
 
 void SSHTerminal::cursor_blink_cb(lv_timer_t* timer)
@@ -879,9 +942,6 @@ void SSHTerminal::delete_current_history_entry()
     
     size_t actual_index = command_history.size() - 1 - history_index;
     
-    ESP_LOGI(TAG, "Deleting history entry: '%s' (index %d)", 
-             command_history[actual_index].c_str(), (int)actual_index);
-    
     command_history.erase(command_history.begin() + actual_index);
     
     history_needs_save = true;
@@ -905,42 +965,6 @@ void SSHTerminal::delete_current_history_entry()
     }
     
     ESP_LOGI(TAG, "History entry deleted. Remaining entries: %d", (int)command_history.size());
-}
-
-void SSHTerminal::send_current_history_command()
-{
-    if (command_history.empty() || history_index < 0) {
-        ESP_LOGW(TAG, "No history command to send (empty or not navigating)");
-        return;
-    }
-    
-    size_t actual_index = command_history.size() - 1 - history_index;
-    std::string cmd_to_send = command_history[actual_index];
-    
-    ESP_LOGI(TAG, "Sending history command: '%s'", cmd_to_send.c_str());
-    
-    current_input = cmd_to_send;
-    
-    std::string display_text = "> " + current_input;
-    if (input_label) {
-        lv_label_set_text(input_label, display_text.c_str());
-    }
-    
-    send_command(cmd_to_send.c_str());
-    
-    auto it = std::find(command_history.begin(), command_history.end(), current_input);
-    if (it != command_history.end()) {
-        command_history.erase(it);
-    }
-    command_history.push_back(current_input);
-    history_needs_save = true;
-    current_input.clear();
-    history_index = -1;
-    
-    display_text = "> ";
-    if (input_label) {
-        lv_label_set_text(input_label, display_text.c_str());
-    }
 }
 
 void SSHTerminal::load_history_from_nvs()
@@ -979,8 +1003,15 @@ void SSHTerminal::load_history_from_nvs()
         if (cmd) {
             err = nvs_get_str(nvs_handle, key, cmd, &required_size);
             if (err == ESP_OK) {
-                command_history.push_back(std::string(cmd));
+                bool has_secret = false;
+                redact_secrets(cmd, &has_secret);
+                if (has_secret) {
+                    history_needs_save = true;  // Rewrite history without it
+                } else {
+                    command_history.push_back(std::string(cmd));
+                }
             }
+            memset(cmd, 0, required_size);
             free(cmd);
         }
     }
@@ -1030,6 +1061,13 @@ void SSHTerminal::save_history_to_nvs()
         }
     }
     
+    // Erase entries beyond the new count, so deleted commands don't linger in flash
+    for (uint32_t i = history_count; i < 100; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "hist_%lu", (unsigned long)i);
+        nvs_erase_key(nvs_handle, key);
+    }
+    
     err = nvs_commit(nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to commit NVS changes: %s", esp_err_to_name(err));
@@ -1037,30 +1075,6 @@ void SSHTerminal::save_history_to_nvs()
         ESP_LOGI(TAG, "Saved %d commands to NVS", saved_count);
     }
     
-    nvs_close(nvs_handle);
-}
-
-void SSHTerminal::clear_history_nvs()
-{
-    nvs_handle_t nvs_handle;
-    esp_err_t err;
-    
-    err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
-    if (err != ESP_OK) {
-        return;
-    }
-    
-    uint32_t history_count = 0;
-    nvs_get_u32(nvs_handle, "hist_count", &history_count);
-    
-    for (uint32_t i = 0; i < history_count && i < 100; i++) {
-        char key[16];
-        snprintf(key, sizeof(key), "hist_%lu", i);
-        nvs_erase_key(nvs_handle, key);
-    }
-    
-    nvs_erase_key(nvs_handle, "hist_count");
-    nvs_commit(nvs_handle);
     nvs_close(nvs_handle);
 }
 
@@ -1115,205 +1129,171 @@ int SSHTerminal::waitsocket(int socket_fd, LIBSSH2_SESSION *session)
     return rc;
 }
 
+// Upper bound on waitsocket() rounds (2 s each) for one SSH protocol step
+static const int SSH_MAX_WAITS = 15;
+
+// libssh2 global state is initialized once and kept for the life of the app
+static bool ensure_libssh2_init()
+{
+    static bool initialized = false;
+    if (!initialized) {
+        initialized = libssh2_init(0) == 0;
+    }
+    return initialized;
+}
+
 esp_err_t SSHTerminal::connect(const char* host, int port, const char* username, const char* password)
 {
-    if (!wifi_connected) {
-        ESP_LOGE(TAG, "WiFi not connected");
-        append_text("ERROR: WiFi not connected\n");
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Connecting to %s:%d", host, port);
-    append_text("Connecting to ");
-    append_text(host);
-    append_text("...\n");
-
-    int rc = libssh2_init(0);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "libssh2 initialization failed (%d)", rc);
-        append_text("ERROR: libssh2 init failed\n");
-        return ESP_FAIL;
-    }
-
-    struct sockaddr_in sin;
-    ssh_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (ssh_socket < 0) {
-        ESP_LOGE(TAG, "Failed to create socket");
-        append_text("ERROR: Failed to create socket\n");
-        libssh2_exit();
-        return ESP_FAIL;
-    }
-
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(port);
-    if (resolve_host(host, &sin.sin_addr) != ESP_OK) {
-        append_text("ERROR: Could not resolve host\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
-        return ESP_FAIL;
-    }
-
-    struct timeval timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
-    setsockopt(ssh_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(ssh_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    if (::connect(ssh_socket, (struct sockaddr*)(&sin), sizeof(struct sockaddr_in)) != 0) {
-        ESP_LOGE(TAG, "Failed to connect socket");
-        append_text("ERROR: Failed to connect socket\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Socket connected");
-    append_text("Socket connected, initializing SSH session...\n");
-
-    session = libssh2_session_init();
-    if (!session) {
-        ESP_LOGE(TAG, "Failed to create SSH session");
-        append_text("ERROR: Failed to create SSH session\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
-        return ESP_FAIL;
-    }
-
-    libssh2_session_set_blocking(session, 0);
-
-    append_text("Performing SSH handshake...\n");
-    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN);
-    
-    if (rc) {
-        ESP_LOGE(TAG, "SSH handshake failed: %d", rc);
-        append_text("ERROR: SSH handshake failed\n");
-        disconnect();
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "SSH handshake successful");
-    append_text("SSH handshake successful\n");
-
-    if (ssh_authenticate(username, password) != ESP_OK) {
-        append_text("ERROR: Authentication failed\n");
-        disconnect();
-        return ESP_FAIL;
-    }
-
-    append_text("Authentication successful\n");
-
-    if (ssh_open_channel() != ESP_OK) {
-        append_text("ERROR: Failed to open channel\n");
-        disconnect();
-        return ESP_FAIL;
-    }
-
-    append_text("SSH channel opened - connected!\n");
-    ssh_connected = true;
-    update_status_bar();
-
-    xTaskCreate(ssh_receive_task, "ssh_rx", 8192, this, 5, NULL);
-
-    return ESP_OK;
+    PendingSsh target;
+    target.host = host;
+    target.port = port;
+    target.username = username;
+    target.password = password ? password : "";
+    return ssh_begin(std::move(target));
 }
 
 esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len,
                                         const char* passphrase)
 {
+    PendingSsh target;
+    target.host = host;
+    target.port = port;
+    target.username = username;
+    target.use_key = true;
+    target.key_data = privkey_data;
+    target.key_len = privkey_len;
+    target.passphrase = passphrase ? passphrase : "";
+    return ssh_begin(std::move(target));
+}
+
+// Opens the socket, runs the SSH handshake and checks the server's host key.
+// A known key continues straight to authentication; a new key waits for the user.
+esp_err_t SSHTerminal::ssh_begin(PendingSsh&& target)
+{
+    wipe_pending_ssh();
+    pending_ssh = std::move(target);
+    PendingSsh& t = pending_ssh;
+
     if (!wifi_connected) {
-        ESP_LOGE(TAG, "WiFi not connected");
-        append_text("ERROR: WiFi not connected\n");
+        append_text("ERROR: WiFi not connected. Type 'wifi' to connect.\n");
+        wipe_pending_ssh();
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "Connecting to %s:%d with public key", host, port);
-    append_text("Connecting to ");
-    append_text(host);
-    append_text(" with public key...\n");
-
-    int rc = libssh2_init(0);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "libssh2 initialization failed (%d)", rc);
+    if (ssh_connected || session) {
+        append_text("Already connected. Type 'exit' to disconnect first.\n");
+        wipe_pending_ssh();
+        return ESP_FAIL;
+    }
+    if (!ensure_libssh2_init()) {
         append_text("ERROR: libssh2 init failed\n");
+        wipe_pending_ssh();
         return ESP_FAIL;
     }
 
-    struct sockaddr_in sin;
+    ESP_LOGI(TAG, "Connecting to %s:%d", t.host.c_str(), t.port);
+    append_text(("Connecting to " + t.host + ":" + std::to_string(t.port) + "...\n").c_str());
+    refresh_display_now();
+
+    struct sockaddr_in sin = {};
+    sin.sin_family = AF_INET;
+    sin.sin_port = htons(t.port);
+    if (resolve_host(t.host.c_str(), &sin.sin_addr) != ESP_OK) {
+        append_text("ERROR: Could not resolve host\n");
+        wipe_pending_ssh();
+        return ESP_FAIL;
+    }
+
     ssh_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (ssh_socket < 0) {
-        ESP_LOGE(TAG, "Failed to create socket");
         append_text("ERROR: Failed to create socket\n");
-        libssh2_exit();
+        wipe_pending_ssh();
         return ESP_FAIL;
     }
 
-    sin.sin_family = AF_INET;
-    sin.sin_port = htons(port);
-    if (resolve_host(host, &sin.sin_addr) != ESP_OK) {
-        append_text("ERROR: Could not resolve host\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
-        return ESP_FAIL;
-    }
-
-    struct timeval timeout;
-    timeout.tv_sec = 10;
-    timeout.tv_usec = 0;
+    struct timeval timeout = {10, 0};
     setsockopt(ssh_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(ssh_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
-    if (::connect(ssh_socket, (struct sockaddr*)(&sin), sizeof(struct sockaddr_in)) != 0) {
-        ESP_LOGE(TAG, "Failed to connect socket");
+    if (::connect(ssh_socket, (struct sockaddr*)(&sin), sizeof(sin)) != 0) {
         append_text("ERROR: Failed to connect socket\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
+        ssh_teardown();
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "Socket connected");
-    append_text("Socket connected, initializing SSH session...\n");
 
     session = libssh2_session_init();
     if (!session) {
-        ESP_LOGE(TAG, "Failed to create SSH session");
         append_text("ERROR: Failed to create SSH session\n");
-        close(ssh_socket);
-        ssh_socket = -1;
-        libssh2_exit();
+        ssh_teardown();
         return ESP_FAIL;
     }
-
     libssh2_session_set_blocking(session, 0);
 
     append_text("Performing SSH handshake...\n");
-    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN);
-    
+    int rc;
+    int waits = 0;
+    while ((rc = libssh2_session_handshake(session, ssh_socket)) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
+    }
     if (rc) {
         ESP_LOGE(TAG, "SSH handshake failed: %d", rc);
         append_text("ERROR: SSH handshake failed\n");
-        disconnect();
+        ssh_teardown();
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "SSH handshake successful");
-    append_text("SSH handshake successful\n");
+    switch (check_host_key(t.host, t.port, t.fingerprint, t.key_type)) {
+        case HostKeyStatus::Match:
+            return ssh_finish();
 
-    if (ssh_authenticate_pubkey(username, privkey_data, privkey_len, passphrase) != ESP_OK) {
-        append_text("ERROR: Public key authentication failed\n");
-        disconnect();
+        case HostKeyStatus::Unknown:
+            append_text(("New server " + t.host + ":" + std::to_string(t.port) + "\n  " + t.key_type + " " +
+                         t.fingerprint + "\n").c_str());
+            append_text("Check it on the server: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub\n");
+            wizard_reset();
+            wizard_goto(WizardStep::HostTrust);
+            return ESP_OK;
+
+        case HostKeyStatus::Mismatch:
+            append_text("\n!!! WARNING: HOST KEY HAS CHANGED !!!\n");
+            append_text(("  " + t.host + ":" + std::to_string(t.port) + " now presents\n  " + t.key_type + " " +
+                         t.fingerprint + "\n").c_str());
+            append_text("Someone may be intercepting the connection. Refused.\n");
+            append_text("If the server was reinstalled, remove the old key: hosts forget\n");
+            ssh_teardown();
+            return ESP_FAIL;
+
+        case HostKeyStatus::Error:
+        default:
+            append_text("ERROR: Could not read the server host key\n");
+            ssh_teardown();
+            return ESP_FAIL;
+    }
+}
+
+// Authenticates with the pending credentials and opens the interactive shell
+esp_err_t SSHTerminal::ssh_finish()
+{
+    PendingSsh& t = pending_ssh;
+    esp_err_t err;
+
+    if (t.use_key) {
+        err = ssh_authenticate_pubkey(t.username.c_str(), t.key_data, t.key_len,
+                                      t.passphrase.empty() ? NULL : t.passphrase.c_str());
+    } else {
+        err = ssh_authenticate(t.username.c_str(), t.password.c_str());
+    }
+    wipe_pending_ssh();
+
+    if (err != ESP_OK) {
+        append_text("ERROR: Authentication failed\n");
+        ssh_teardown();
         return ESP_FAIL;
     }
-
-    append_text("Public key authentication successful\n");
+    append_text("Authentication successful\n");
 
     if (ssh_open_channel() != ESP_OK) {
         append_text("ERROR: Failed to open channel\n");
-        disconnect();
+        ssh_teardown();
         return ESP_FAIL;
     }
 
@@ -1322,7 +1302,6 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     update_status_bar();
 
     xTaskCreate(ssh_receive_task, "ssh_rx", 8192, this, 5, NULL);
-
     return ESP_OK;
 }
 
@@ -1331,19 +1310,18 @@ esp_err_t SSHTerminal::ssh_authenticate(const char* username, const char* passwo
     append_text("Authenticating as ");
     append_text(username);
     append_text("...\n");
+    refresh_display_now();
 
     int rc;
-    while ((rc = libssh2_userauth_password(session, username, password)) == LIBSSH2_ERROR_EAGAIN);
-    
-    if (rc) {
-        char *err_msg;
-        int err_len;
-        libssh2_session_last_error(session, &err_msg, &err_len, 0);
-        ESP_LOGE(TAG, "Authentication failed: %s", err_msg);
-        return ESP_FAIL;
+    int waits = 0;
+    while ((rc = libssh2_userauth_password(session, username, password)) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
 
-    ESP_LOGI(TAG, "Authentication successful");
+    if (rc) {
+        ESP_LOGE(TAG, "Password authentication failed: %d", rc);
+        return ESP_FAIL;
+    }
     return ESP_OK;
 }
 
@@ -1353,28 +1331,25 @@ esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char*
     append_text("Authenticating as ");
     append_text(username);
     append_text(" with public key...\n");
+    refresh_display_now();
 
     int rc;
-    // libssh2_userauth_publickey_frommemory expects the private key, public key (can be NULL), and passphrase
+    int waits = 0;
     while ((rc = libssh2_userauth_publickey_frommemory(session, username, strlen(username),
-                                                         NULL, 0,  // public key (optional)
+                                                         NULL, 0,  // public key (derived from the private key)
                                                          privkey_data, privkey_len,
-                                                         passphrase)) == LIBSSH2_ERROR_EAGAIN);
-    
+                                                         passphrase)) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
+    }
+
     if (rc) {
-        char *err_msg;
-        int err_len;
-        libssh2_session_last_error(session, &err_msg, &err_len, 0);
-        ESP_LOGE(TAG, "Public key authentication failed: %s (error code: %d)", err_msg, rc);
+        ESP_LOGE(TAG, "Public key authentication failed: %d", rc);
         if (rc == LIBSSH2_ERROR_FILE) {
             append_text(passphrase ? "ERROR: Could not decrypt key - wrong passphrase or unsupported cipher\n"
                                    : "ERROR: Could not read key (passphrase needed or unsupported format)\n");
         }
-        append_text("ERROR: Public key authentication failed\n");
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "Public key authentication successful");
     return ESP_OK;
 }
 
@@ -1383,84 +1358,84 @@ esp_err_t SSHTerminal::ssh_open_channel()
     append_text("Opening SSH channel...\n");
 
     int rc;
+    int waits = 0;
     while ((channel = libssh2_channel_open_session(session)) == NULL &&
-           libssh2_session_last_error(session, NULL, NULL, 0) == LIBSSH2_ERROR_EAGAIN) {
-        waitsocket(ssh_socket, session);
+           libssh2_session_last_error(session, NULL, NULL, 0) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
-
     if (channel == NULL) {
         ESP_LOGE(TAG, "Failed to open channel");
         return ESP_FAIL;
     }
 
-    while ((rc = libssh2_channel_request_pty(channel, "vt100")) == LIBSSH2_ERROR_EAGAIN) {
-        waitsocket(ssh_socket, session);
+    waits = 0;
+    while ((rc = libssh2_channel_request_pty(channel, "vt100")) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
-    
     if (rc) {
         ESP_LOGE(TAG, "Failed to request PTY");
         return ESP_FAIL;
     }
 
-    while ((rc = libssh2_channel_shell(channel)) == LIBSSH2_ERROR_EAGAIN) {
-        waitsocket(ssh_socket, session);
+    waits = 0;
+    while ((rc = libssh2_channel_shell(channel)) == LIBSSH2_ERROR_EAGAIN &&
+           (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
-    
     if (rc) {
         ESP_LOGE(TAG, "Failed to start shell");
         return ESP_FAIL;
     }
 
     libssh2_channel_set_blocking(channel, 0);
-
-    ESP_LOGI(TAG, "SSH channel opened successfully");
     return ESP_OK;
 }
 
-esp_err_t SSHTerminal::disconnect()
+void SSHTerminal::wipe_pending_ssh()
 {
+    vault::wipe(pending_ssh.password);
+    vault::wipe(pending_ssh.passphrase);
+    pending_ssh = PendingSsh();
+}
+
+// Frees the channel, session and socket. Safe to call from any task: the mutex
+// keeps the receive task from using the session while it is being freed.
+void SSHTerminal::ssh_teardown()
+{
+    xSemaphoreTake(ssh_mutex, portMAX_DELAY);
+    ssh_generation++;
     ssh_connected = false;
-    
     if (channel) {
         libssh2_channel_free(channel);
         channel = NULL;
     }
-
     if (session) {
         libssh2_session_disconnect(session, "Normal Shutdown");
         libssh2_session_free(session);
         session = NULL;
     }
-
     if (ssh_socket >= 0) {
         close(ssh_socket);
         ssh_socket = -1;
     }
+    xSemaphoreGive(ssh_mutex);
+    wipe_pending_ssh();
+}
 
-    libssh2_exit();
-    
-    if (bsp_display_lock(0)) {
+esp_err_t SSHTerminal::disconnect()
+{
+    bool was_open = session != NULL || ssh_socket >= 0;
+    ssh_teardown();
+
+    if (was_open && bsp_display_lock(0)) {
         update_status_bar();
         append_text("\nDisconnected\n");
         bsp_display_unlock();
     }
-    
-    ESP_LOGI(TAG, "Disconnected");
-    
     return ESP_OK;
-}
-
-bool SSHTerminal::is_connected()
-{
-    return ssh_connected;
 }
 
 void SSHTerminal::send_command(const char* cmd)
 {
-    if (!channel) {
-        return;
-    }
-    
     bytes_received = 0;
     if (byte_counter_label && bsp_display_lock(0)) {
         lv_label_set_text(byte_counter_label, "0 B");
@@ -1469,22 +1444,15 @@ void SSHTerminal::send_command(const char* cmd)
 
     std::string full_cmd = std::string(cmd) + "\n";
     ssize_t nwritten = 0;
-    int retry_count = 0;
-    const int MAX_RETRIES = 50;
-    
-    ESP_LOGI(TAG, "Sending command: %s", cmd);
-    
-    while (nwritten < (ssize_t)full_cmd.length() && retry_count < MAX_RETRIES) {
-        ssize_t n = libssh2_channel_write(channel, full_cmd.c_str() + nwritten, 
-                                          full_cmd.length() - nwritten);
+    int waits = 0;
+
+    xSemaphoreTake(ssh_mutex, portMAX_DELAY);
+    while (channel && nwritten < (ssize_t)full_cmd.length()) {
+        ssize_t n = libssh2_channel_write(channel, full_cmd.c_str() + nwritten, full_cmd.length() - nwritten);
         if (n == LIBSSH2_ERROR_EAGAIN) {
-            int wait_result = waitsocket(ssh_socket, session);
-            if (wait_result <= 0) {
-                retry_count++;
-                if (retry_count >= MAX_RETRIES) {
-                    ESP_LOGE(TAG, "Send command timeout after %d retries", retry_count);
-                    break;
-                }
+            if (waitsocket(ssh_socket, session) <= 0 && ++waits >= SSH_MAX_WAITS) {
+                ESP_LOGE(TAG, "Send timed out");
+                break;
             }
             continue;
         }
@@ -1493,46 +1461,51 @@ void SSHTerminal::send_command(const char* cmd)
             break;
         }
         nwritten += n;
-        retry_count = 0;
+        waits = 0;
     }
-    
-    ESP_LOGI(TAG, "Command sent: %d bytes", (int)nwritten);
+    xSemaphoreGive(ssh_mutex);
 }
 
 void SSHTerminal::ssh_receive_task(void* param)
 {
     SSHTerminal* terminal = (SSHTerminal*)param;
+    const uint32_t generation = terminal->ssh_generation;
     char buffer[1024];
-    ssize_t rc;
+    bool closed_by_server = false;
 
-    ESP_LOGI(TAG, "SSH receive task started");
+    while (true) {
+        xSemaphoreTake(terminal->ssh_mutex, portMAX_DELAY);
+        if (generation != terminal->ssh_generation || !terminal->channel) {
+            xSemaphoreGive(terminal->ssh_mutex);
+            break;  // Disconnected elsewhere
+        }
+        ssize_t rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
+        bool eof = libssh2_channel_eof(terminal->channel);
+        xSemaphoreGive(terminal->ssh_mutex);
 
-    while (terminal->ssh_connected && terminal->channel) {
-        rc = libssh2_channel_read(terminal->channel, buffer, sizeof(buffer) - 1);
-        
         if (rc > 0) {
             buffer[rc] = '\0';
             terminal->process_received_data(buffer, rc);
-            vTaskDelay(1);
         } else if (rc == LIBSSH2_ERROR_EAGAIN) {
             terminal->flush_display_buffer();
             vTaskDelay(pdMS_TO_TICKS(100));
         } else if (rc < 0) {
             ESP_LOGE(TAG, "Read error: %d", (int)rc);
+            closed_by_server = true;
             break;
         }
 
-        if (libssh2_channel_eof(terminal->channel)) {
-            ESP_LOGI(TAG, "Channel EOF");
+        if (eof) {
             terminal->flush_display_buffer();
+            closed_by_server = true;
             break;
         }
-        
         vTaskDelay(1);
     }
 
-    ESP_LOGI(TAG, "SSH receive task ended");
-    terminal->disconnect();
+    if (closed_by_server && generation == terminal->ssh_generation) {
+        terminal->disconnect();
+    }
     vTaskDelete(NULL);
 }
 
@@ -1686,10 +1659,6 @@ void SSHTerminal::update_status_bar()
     bsp_display_unlock();
 }
 
-void SSHTerminal::update_terminal_display()
-{
-}
-
 void SSHTerminal::create_side_panel()
 {
     side_panel = lv_obj_create(terminal_screen);
@@ -1802,8 +1771,11 @@ void SSHTerminal::send_special_key(const char* sequence)
     }
     
     if (ssh_connected && channel) {
-        libssh2_channel_write(channel, sequence, strlen(sequence));
-        ESP_LOGI(TAG, "Sent special key sequence");
+        xSemaphoreTake(ssh_mutex, portMAX_DELAY);
+        if (channel) {
+            libssh2_channel_write(channel, sequence, strlen(sequence));
+        }
+        xSemaphoreGive(ssh_mutex);
     } else {
         ESP_LOGW(TAG, "Cannot send special key - not connected");
     }
@@ -1851,9 +1823,19 @@ void SSHTerminal::load_key_from_memory(const char* keyname, const char* key_data
     std::string keyname_str(keyname);
     std::transform(keyname_str.begin(), keyname_str.end(), keyname_str.begin(), ::tolower);
     
-    std::string key_str(key_data, key_len);
+    // Keys stay in RAM for the whole session; cap them so a crowded SD card can't exhaust the heap
+    static const size_t MAX_KEYS = 8;
+    static const size_t MAX_TOTAL_BYTES = 48 * 1024;
+    size_t total = key_len;
+    for (const auto& kv : loaded_keys) {
+        total += kv.second.size();
+    }
+    if (loaded_keys.size() >= MAX_KEYS || total > MAX_TOTAL_BYTES) {
+        ESP_LOGW(TAG, "Key limit reached, skipping %s", keyname);
+        return;
+    }
     
-    loaded_keys[keyname_str] = key_str;
+    loaded_keys[keyname_str] = std::string(key_data, key_len);
     
     ESP_LOGI(TAG, "Loaded SSH key: %s (%d bytes)", keyname, key_len);
 }

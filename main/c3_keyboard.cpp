@@ -22,11 +22,10 @@ esp_err_t C3Keyboard::init()
     }
 
     // Configure the keypad device
-    i2c_device_config_t dev_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7, // Address Length (7-bit)
-        .device_address = I2C_KEYPAD_ADDR,     // Keypad I2C Address
-        .scl_speed_hz = I2C_MASTER_FREQ_HZ     // I2C Speed (100kHz)
-    };
+    i2c_device_config_t dev_config = {};
+    dev_config.dev_addr_length = I2C_ADDR_BIT_LEN_7; // Address Length (7-bit)
+    dev_config.device_address = I2C_KEYPAD_ADDR;     // Keypad I2C Address
+    dev_config.scl_speed_hz = I2C_MASTER_FREQ_HZ;    // I2C Speed (100kHz)
 
     // Register the keypad device on the existing I2C bus
     esp_err_t err = i2c_master_bus_add_device(i2c_handle, &dev_config, &keypad_dev);

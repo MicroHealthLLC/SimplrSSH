@@ -1,0 +1,30 @@
+# PocketSSH: deliberate settings for the LilyGO T-Deck (ESP32-S3, 8 MB PSRAM).
+# Keep these lean and minimal-attack-surface; see CLAUDE.md. ESP-IDF applies
+# this file only to options missing from sdkconfig, so when changing one here,
+# also remove it from sdkconfig (or run `idf.py menuconfig`) and commit both.
+
+# --- Attack surface: station mode only -------------------------------------
+# No access point / DHCP server: the device only joins networks
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+CONFIG_LWIP_DHCPS=n
+# IPv4 only (SSH targets are resolved/connected with AF_INET)
+CONFIG_LWIP_IPV6=n
+# libssh2 protocol tracing is never used in production and could log session data
+CONFIG_LIBSSH2_DEBUG_ENABLE=n
+
+# --- Internal RAM: move bulk buffers to PSRAM --------------------------------
+# WiFi/LWIP buffers in PSRAM when possible
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# mbedTLS follows the heap policy (large allocations go to PSRAM)
+CONFIG_MBEDTLS_DEFAULT_MEM_ALLOC=y
+# LVGL uses the system heap instead of a fixed 64 KB internal pool
+CONFIG_LV_USE_CLIB_MALLOC=y
+
+# --- Flash / boot time --------------------------------------------------------
+# Only Montserrat 10/12 (UI) and 14 (LVGL default) are used
+CONFIG_LV_FONT_MONTSERRAT_8=n
+CONFIG_LV_FONT_MONTSERRAT_18=n
+CONFIG_LV_FONT_MONTSERRAT_20=n
+CONFIG_LV_FONT_MONTSERRAT_28=n
+# Skip the full PSRAM test on every boot
+CONFIG_SPIRAM_MEMTEST=n

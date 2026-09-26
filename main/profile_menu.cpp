@@ -93,7 +93,7 @@ void SSHTerminal::wizard_goto(WizardStep step)
 
 void SSHTerminal::wizard_prompt()
 {
-    if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt()) {
+    if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt() || host_step_prompt()) {
         return;
     }
 }
@@ -108,12 +108,15 @@ void SSHTerminal::wizard_handle_input(const std::string& raw_input)
 
     if (!wizard_input_masked() && to_lower(input) == "cancel") {
         append_text("Cancelled.\n");
+        if (wizard.step == WizardStep::HostTrust) {
+            ssh_teardown();  // Close the half-open connection waiting for trust
+        }
         wizard_reset();
         return;
     }
 
     if (profile_step_input(raw_input, input) || wifi_step_input(raw_input, input) ||
-        vault_step_input(raw_input, input)) {
+        vault_step_input(raw_input, input) || host_step_input(raw_input, input)) {
         return;
     }
 }

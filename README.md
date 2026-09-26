@@ -33,6 +33,19 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 ## Version History
 
 ### Unreleased
+- **Security**: SSH server host keys are verified (trust on first use). A new server's
+  `SHA256:` fingerprint is shown for you to confirm; a changed key is refused. `hosts` command
+  lists and forgets trusted keys
+- **Security**: Passwords on `connect`/`ssh`/`sshkey` command lines are masked on screen and kept
+  out of command history; old history entries containing them are purged; deleted history
+  entries are erased from flash
+- **Security**: Removed keystroke and command logging; private-key buffers are wiped after loading
+- **Fixed**: Crash/memory corruption when disconnecting while data was arriving (the SSH session
+  is now used by one task at a time); SSH handshake and login no longer busy-spin the CPU
+- **Removed**: Splash animation (saves ~314 KB flash; the terminal opens immediately)
+- **Improved**: ~67 KB less internal RAM (LVGL uses the system heap, WiFi/LWIP/mbedTLS buffers go
+  to PSRAM, trackball task stack 8 KB -> 2 KB); image ~366 KB smaller (no SoftAP, IPv6,
+  libssh2 debug, unused fonts)
 - **Added**: WiFi setup wizard (`wifi` command, or `connect` with no arguments)
   - Scans for networks and shows them strongest first with signal bars; pick one by number
   - Password is typed masked; hidden networks supported
@@ -172,7 +185,7 @@ and pressing Enter. You can also **roll the trackball** to cycle through the num
    `disconnect` turns WiFi off.
 
 On later boots the device **auto-connects to the strongest saved WiFi network in range** once
-you dismiss the splash screen (it asks for your PIN first if that network's password is saved).
+it boots (it asks for your PIN first if that network's password is saved).
 Then just type `profile` and pick a server.
 
 ## WiFi Wizard
@@ -306,8 +319,31 @@ until you reboot or type `vault lock`. Press Enter at the PIN prompt to skip.
 
 > **Security notes:** the PIN can't be recovered. Anyone who can read the device's flash can try
 > to guess a short PIN offline, so use 6+ characters (letters and digits) if the device might be
-> lost. Wizard answers (passwords, PINs) are never written to command history. Passwords typed
-> directly on the `connect`/`ssh`/`sshkey` command lines *are* kept in command history.
+> lost. Wizard answers (passwords, PINs) are never written to command history, and passwords
+> typed on the `connect`/`ssh`/`sshkey` command lines are masked and not stored.
+
+## Server Keys (Known Hosts)
+
+The first time you connect to a server, PocketSSH shows the server's host key fingerprint and
+asks whether to trust it:
+
+```
+New server 192.168.1.100:22
+  ED25519 SHA256:uNiVztksCsDhcc0u9e8BujQXVUpKZIDTMczCvj3tD2s
+Check it on the server: ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub
+Trust this server and continue? (y/n) [n]:
+```
+
+Compare it with the output of `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` on the server
+(or with what your desktop's `ssh` showed the first time). Once trusted, the key is remembered
+per `host:port`. If the server ever presents a different key, the connection is **refused** -
+someone may be intercepting it. If you know the server was reinstalled, remove the old key and
+connect again to review the new one.
+
+| Command | What it does |
+|---|---|
+| `hosts` | List trusted servers and their key fingerprints |
+| `hosts forget <HOST[:PORT] or #>` | Remove a trusted key (port defaults to 22) |
 
 ## All Local Commands
 
@@ -322,6 +358,7 @@ These run on the device (they are not sent to the SSH server):
 | `ssh <HOST> <PORT> <USER> <PASS>` | SSH with a password, without a profile |
 | `sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]` | SSH with an SD card key, without a profile |
 | `vault` | Master PIN and saved passwords (see [above](#saved-passwords-and-the-master-pin)) |
+| `hosts` | Trusted server keys (see [Server Keys](#server-keys-known-hosts)) |
 | `exit` | Close the SSH session |
 | `clear` | Clear the screen |
 | `help` | Show the command list |
@@ -475,9 +512,11 @@ cp ~/.ssh/id_rsa ~/.ssh/id_rsa.backup
 - **FreeRTOS**: Multi-task architecture for concurrent operations
 
 ### System Tasks
-- **keypad_task**: Hardware keyboard input processing with non-blocking display updates
-- **trackball_task**: Trackball GPIO monitoring for history navigation (0ms timeout, drops input if display busy)
-- **ssh_receive_task**: SSH data reception and terminal output rendering
+- **keypad_task** (8 KB stack): the only task that runs the terminal - keyboard input, trackball
+  events, menus, WiFi scans, encryption and SSH connects
+- **trackball_task** (2 KB stack): polls the trackball GPIOs and queues events for keypad_task
+- **ssh_receive_task** (8 KB stack): reads SSH data and renders it; all libssh2 calls on the
+  session are serialized by a mutex, and a stale task exits after a disconnect
 - **LVGL task**: GUI rendering and touch gesture detection
 
 ### Display Performance
@@ -500,6 +539,8 @@ PocketSSH uses **libssh2** for SSH2 protocol implementation, providing secure re
 ```cpp
 1. libssh2_session_init() - Initialize SSH session
 2. libssh2_session_handshake() - Perform SSH handshake
+2b. libssh2_hostkey_hash(SHA256) - Verify the server key against known hosts
+    (new: ask the user to trust it; changed: refuse the connection)
 3a. libssh2_userauth_password() - Authenticate with username/password
    OR
 3b. libssh2_userauth_publickey_frommemory() - Authenticate with private key
@@ -636,21 +677,23 @@ Disconnected from SSH server
   [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin))
 - Private keys are read from the SD card into memory only; they are not copied to flash
 
+- SSH host keys verified with trust on first use (see [Server Keys](#server-keys-known-hosts))
+- Station-only WiFi (no access point), IPv4 only, no telemetry: the only outbound connections
+  are to the WiFi network you choose and the SSH server you enter (plus DNS for its name)
+
 **Security Notes:**
-- No host key verification (accepts any server)
-- Passwords typed on the `connect`/`ssh`/`sshkey` command lines are kept in command history (NVS);
-  use the wizards to avoid this
-- **Recommended for production**:
-  - Add host key verification
-  - Use ESP32's secure boot and flash encryption
-  - Consider secure element integration for key storage
+- See [SECURITY.md](SECURITY.md) for the security review, threat model and residual risks
+- Flash is not encrypted: profiles, known hosts and command history (non-secret) are readable by
+  anyone with physical access to the flash chip. Passwords are protected by the vault PIN
+- **Recommended for production**: enable ESP32 secure boot and flash encryption
 
 ## Memory Requirements
 
-- Minimum 8KB stack for SSH task
-- ~40-50KB heap for SSH session
-- Additional memory for terminal display (LVGL)
-- Optimized for ESP32 memory constraints
+- ESP32-S3 with 8 MB PSRAM: bulk buffers (WiFi/LWIP, large mbedTLS and LVGL allocations) live
+  in PSRAM; internal RAM is kept for stacks, DMA and small allocations
+- About 115 KB of internal RAM is used statically; tasks: 8 KB (keypad), 8 KB (SSH receive),
+  2 KB (trackball)
+- ~40-50 KB heap per SSH session; up to 8 SD card keys (48 KB total) are kept in RAM
 
 ## Known Limitations
 
@@ -677,6 +720,8 @@ Disconnected from SSH server
 - Ensure WPA2-PSK authentication is supported
 
 ### SSH Connection Issues
+- **"HOST KEY HAS CHANGED"**: the server presented a different key than the one you trusted.
+  Verify with the server's admin; if it was reinstalled, `hosts forget <host>` and reconnect
 - Verify server IP and port (default SSH is port 22)
 - Check firewall settings on target server
 - Ensure SSH server is running (`sudo systemctl status ssh`)

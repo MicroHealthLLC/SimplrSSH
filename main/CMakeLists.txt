@@ -9,14 +9,7 @@ set(SOURCES
     "wifi_menu.cpp"
     "vault_menu.cpp"
     "secret_vault.cpp"
-    "lvgl_pepboy_img/pepboy_0.c"
-    "lvgl_pepboy_img/pepboy_1.c"
-    "lvgl_pepboy_img/pepboy_2.c"
-    "lvgl_pepboy_img/pepboy_3.c"
-    "lvgl_pepboy_img/pepboy_4.c"
-    "lvgl_pepboy_img/pepboy_5.c"
-    "lvgl_pepboy_img/pepboy_6.c"
-    "lvgl_pepboy_img/pepboy_7.c"
+    "known_hosts.cpp"
 )
 
 # List of include directories
