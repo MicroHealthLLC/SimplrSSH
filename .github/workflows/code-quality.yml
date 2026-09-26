@@ -1,0 +1,105 @@
+# Code quality checks. Report only: nothing here fails a push or pull request.
+# Findings show up as annotations on the changed files and in each job's summary.
+name: Code quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cppcheck:
+    name: Static analysis (cppcheck)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cppcheck
+
+      - name: Run cppcheck
+        run: |
+          cppcheck --version
+          cppcheck --enable=warning,style,performance,portability --std=c++17 --language=c++ \
+            --inline-suppr --quiet \
+            --suppress=missingIncludeSystem --suppress=missingInclude --suppress=unmatchedSuppression \
+            -I main/include \
+            --template='{file}\t{line}\t{severity}\t{id}\t{message}' \
+            main/*.cpp main/include 2> cppcheck.txt || true
+
+      - name: Report findings
+        run: |
+          count=$(grep -c . cppcheck.txt || true)
+          while IFS=$'\t' read -r file line severity id message; do
+            [ -n "$file" ] && echo "::warning file=$file,line=$line,title=cppcheck $id::$severity: $message"
+          done < cppcheck.txt
+          {
+            echo "## cppcheck"
+            echo ""
+            if [ "$count" = "0" ]; then
+              echo "No findings. :tada:"
+            else
+              echo "**$count findings** (see annotations)."
+              echo ""
+              echo "| Check | Count |"
+              echo "|---|---|"
+              cut -f4 cppcheck.txt | sort | uniq -c | sort -rn | awk '{print "| `"$2"` | "$1" |"}'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  flawfinder:
+    name: Security lint (flawfinder)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flawfinder
+        run: pip install --quiet flawfinder
+
+      - name: Run flawfinder
+        run: |
+          flawfinder --minlevel=2 --singleline --dataonly --quiet main/*.cpp main/include > flawfinder.txt || true
+          count=$(grep -cE '^main/' flawfinder.txt || true)
+          # Lines look like: main/file.cpp:123:  [2] (buffer) char:Statically-sized arrays ...
+          grep -E '^main/' flawfinder.txt | while IFS= read -r l; do
+            file=${l%%:*}; rest=${l#*:}; line=${rest%%:*}; msg=${rest#*:}
+            echo "::warning file=$file,line=$line,title=flawfinder::$(echo "$msg" | sed 's/^ *//')"
+          done
+          {
+            echo "## flawfinder (risk level 2+)"
+            echo ""
+            if [ "$count" = "0" ]; then
+              echo "No findings. :tada:"
+            else
+              echo "**$count findings** (see annotations). Many are advisory - review each one."
+              echo ""
+              echo "| Category | Count |"
+              echo "|---|---|"
+              grep -oE '^main/[^ ]+ +\[[0-9]\] \([a-z]+\)' flawfinder.txt | grep -oE '\([a-z]+\)' | sort | uniq -c | sort -rn \
+                | awk '{print "| "$2" | "$1" |"}'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  compiler-warnings:
+    name: Compiler warnings
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (ESP-IDF v5.5.1)
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          # The action wraps this in bash -c '...', so it must not contain single quotes
+          command: idf.py build 2>&1 | tee build-output.log; exit 0
+
+      - name: Report compiler warnings
+        run: python3 .github/scripts/report_warnings.py build-output.log

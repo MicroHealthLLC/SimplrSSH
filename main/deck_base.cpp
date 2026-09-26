@@ -48,6 +48,9 @@ LV_IMG_DECLARE(pepboy_7);
 
 static const char *TAG = "main";
 
+// GT911 touch controller I2C clock (was CONFIG_BSP_I2C_CLK_SPEED_HZ, which the BSP no longer provides)
+#define TOUCH_I2C_CLK_SPEED_HZ 100000
+
 static i2c_master_bus_handle_t i2c_handle;
 static lv_obj_t *ssh_screen;
 static SSHTerminal *ssh_terminal = NULL;
@@ -134,8 +137,17 @@ void keypad_task(void *param)
         return;
     }
 
+    bool startup_pending = true;
+
     while (1)
     {
+        // Once the splash screen is gone, run startup work (WiFi auto-connect)
+        if (startup_pending && !splash_screen && ssh_terminal && bsp_display_lock(0)) {
+            startup_pending = false;
+            ssh_terminal->run_startup_tasks();
+            bsp_display_unlock();
+        }
+
         uint32_t key = keyboard.get_key();
         if (key)
         {
@@ -251,11 +263,15 @@ esp_err_t _bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_
     };
     esp_lcd_panel_io_handle_t tp_io_handle = NULL;
     ESP_LOGI("Touch", "Initialize LCD Touch: GT911");
-    #pragma GCC diagnostic push
-    #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
-    #pragma GCC diagnostic pop
-    tp_io_config.scl_speed_hz = CONFIG_BSP_I2C_CLK_SPEED_HZ;
+    // Same settings as ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG(), assigned field by field:
+    // that macro's designated initializers are out of declaration order, which C++ rejects.
+    esp_lcd_panel_io_i2c_config_t tp_io_config = {};
+    tp_io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;
+    tp_io_config.control_phase_bytes = 1;
+    tp_io_config.dc_bit_offset = 0;
+    tp_io_config.lcd_cmd_bits = 16;
+    tp_io_config.flags.disable_control_phase = 1;
+    tp_io_config.scl_speed_hz = TOUCH_I2C_CLK_SPEED_HZ;
 
     i2c_handle = bsp_i2c_get_handle();
     ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle), "TOuch", "");
@@ -380,9 +396,10 @@ extern "C" void app_main(void)
 
     bsp_display_unlock();
 
-    xTaskCreate(keypad_task, "keypad_task", 4096, NULL, 5, NULL);
+    // Input tasks run the menus, which do WiFi scans, encryption and SSH connects
+    xTaskCreate(keypad_task, "keypad_task", 8192, NULL, 5, NULL);
     
-    xTaskCreate(trackball_task, "trackball_task", 4096, NULL, 5, NULL);
+    xTaskCreate(trackball_task, "trackball_task", 8192, NULL, 5, NULL);
 }
 
 /*

@@ -5,6 +5,7 @@
  */
 
 #include "ssh_terminal.hpp"
+#include "secret_vault.hpp"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -36,6 +37,9 @@ static EventGroupHandle_t s_wifi_event_group;
 
 static int s_retry_num = 0;
 #define WIFI_MAXIMUM_RETRY 5
+
+static bool s_wifi_started = false;
+static bool s_connect_requested = false;  // Reconnect on drop only while a connection is wanted
 
 static esp_event_handler_instance_t s_instance_any_id = NULL;
 static esp_event_handler_instance_t s_instance_got_ip = NULL;
@@ -80,6 +84,9 @@ SSHTerminal::SSHTerminal()
     }
     
     load_history_from_nvs();
+    vault::init();
+    profiles = profile_store::load();
+    saved_networks = network_store::load();
 }
 
 SSHTerminal::~SSHTerminal() 
@@ -107,15 +114,17 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 {
     SSHTerminal* terminal = (SSHTerminal*)arg;
     
-    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < WIFI_MAXIMUM_RETRY) {
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_connect_requested && s_retry_num < WIFI_MAXIMUM_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
             ESP_LOGI(TAG, "Retry to connect to the AP");
         } else {
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            if (s_connect_requested && terminal) {
+                s_connect_requested = false;
+                terminal->wifi_link_lost();
+            }
         }
         ESP_LOGI(TAG,"Connect to the AP fail");
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -123,9 +132,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "Got IP:" IPSTR, IP2STR(&event->ip_info.ip));
         
         s_retry_num = 0;
-        ESP_LOGI(TAG, "Setting WIFI_CONNECTED_BIT in event group %p", s_wifi_event_group);
-        EventBits_t result = xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
-        ESP_LOGI(TAG, "Event group bits after setting: 0x%x", result);
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
         
         if (terminal) {
             char ip_str[64];
@@ -139,41 +146,19 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     }
 }
 
-esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
+// Brings up the WiFi driver in station mode once; connections are made on request
+esp_err_t SSHTerminal::start_wifi_driver()
 {
-    ESP_LOGI(TAG, "Initializing WiFi...");
-    
-    static bool wifi_initialized = false;
-    if (wifi_initialized) {
-        ESP_LOGI(TAG, "Cleaning up previous WiFi instance...");
-        
-        if (s_instance_any_id) {
-            esp_event_handler_instance_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID, s_instance_any_id);
-            s_instance_any_id = NULL;
-        }
-        if (s_instance_got_ip) {
-            esp_event_handler_instance_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP, s_instance_got_ip);
-            s_instance_got_ip = NULL;
-        }
-        
-        esp_wifi_stop();
-        esp_wifi_deinit();
-        vTaskDelay(pdMS_TO_TICKS(100));
+    if (s_wifi_started) {
+        return ESP_OK;
     }
     
-    s_retry_num = 0;
+    ESP_LOGI(TAG, "Starting WiFi driver...");
+    s_wifi_event_group = xEventGroupCreate();
     
-    if (!s_wifi_event_group) {
-        s_wifi_event_group = xEventGroupCreate();
-    }
-    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
-    
-    if (!wifi_initialized) {
-        ESP_ERROR_CHECK(esp_netif_init());
-        ESP_ERROR_CHECK(esp_event_loop_create_default());
-        esp_netif_create_default_wifi_sta();
-        wifi_initialized = true;
-    }
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
@@ -189,18 +174,39 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
                                                         this,
                                                         &s_instance_got_ip));
 
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    s_wifi_started = true;
+    return ESP_OK;
+}
+
+esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
+{
+    ESP_LOGI(TAG, "Connecting WiFi to %s...", ssid);
+    start_wifi_driver();
+    
+    // Leave the current network first (switching networks)
+    if (s_connect_requested || wifi_connected) {
+        s_connect_requested = false;
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(300));
+        wifi_connected = false;
+        wifi_ssid.clear();
+    }
+    
+    s_retry_num = 0;
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+
     wifi_config_t wifi_config = {};
     strncpy((char*)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);
     strncpy((char*)wifi_config.sta.password, password, sizeof(wifi_config.sta.password) - 1);
-    wifi_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
+    wifi_config.sta.threshold.authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     wifi_config.sta.pmf_cfg.capable = true;
     wifi_config.sta.pmf_cfg.required = false;
 
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-
-    ESP_LOGI(TAG, "WiFi init finished. Event group: %p", s_wifi_event_group);
+    s_connect_requested = true;
+    esp_wifi_connect();
 
     const int max_wait_ms = 15000;
     const int check_interval_ms = 500;
@@ -212,14 +218,11 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
                 pdFALSE,
                 pdFALSE,
                 pdMS_TO_TICKS(check_interval_ms));
-        
-        if (elapsed_ms % 5000 == 0) {
-            ESP_LOGI(TAG, "Waiting... bits: 0x%x, elapsed: %d ms", bits, elapsed_ms);
-        }
 
         if (bits & WIFI_CONNECTED_BIT) {
             ESP_LOGI(TAG, "Connected to AP SSID:%s", ssid);
             wifi_connected = true;
+            wifi_ssid = ssid;
             
             if (bsp_display_lock(0)) {
                 update_status_bar();
@@ -228,31 +231,114 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
             return ESP_OK;
         } else if (bits & WIFI_FAIL_BIT) {
             ESP_LOGI(TAG, "Failed to connect to SSID:%s", ssid);
-            wifi_connected = false;
-            
-            if (bsp_display_lock(0)) {
-                update_status_bar();
-                bsp_display_unlock();
-            }
-            return ESP_FAIL;
+            break;
         }
         
         if (bsp_display_lock(0)) {
             append_text(".");
+            refresh_display_now();
             bsp_display_unlock();
         }
         elapsed_ms += check_interval_ms;
     }
     
-    ESP_LOGE(TAG, "Connection timeout");
+    ESP_LOGE(TAG, "WiFi connection to %s failed", ssid);
+    s_connect_requested = false;
+    esp_wifi_disconnect();
     wifi_connected = false;
     s_retry_num = 0;
     
     if (bsp_display_lock(0)) {
+        append_text("\n");
         update_status_bar();
         bsp_display_unlock();
     }
     return ESP_FAIL;
+}
+
+void SSHTerminal::disconnect_wifi()
+{
+    if (wifi_connected) {
+        append_text("Disconnecting WiFi...\n");
+        s_connect_requested = false;
+        esp_wifi_disconnect();
+        wifi_connected = false;
+        wifi_ssid.clear();
+        update_status_bar();
+        append_text("WiFi disconnected\n");
+    } else {
+        append_text("WiFi not connected\n");
+    }
+}
+
+// Called from the WiFi event task when an established connection is gone for good
+void SSHTerminal::wifi_link_lost()
+{
+    if (!wifi_connected) {
+        return;
+    }
+    wifi_connected = false;
+    wifi_ssid.clear();
+    if (bsp_display_lock(0)) {
+        append_text("\nWiFi connection lost. Type 'wifi' to reconnect.\n");
+        update_status_bar();
+        bsp_display_unlock();
+    }
+}
+
+// Scans for access points; results are de-duplicated by SSID, strongest first
+esp_err_t SSHTerminal::scan_wifi(std::vector<WifiScanResult>& results)
+{
+    results.clear();
+    start_wifi_driver();
+
+    wifi_scan_config_t scan_config = {};
+    esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    uint16_t count = 0;
+    esp_wifi_scan_get_ap_num(&count);
+    count = std::min<uint16_t>(count, 30);
+    std::vector<wifi_ap_record_t> records(count);
+    if (count > 0) {
+        err = esp_wifi_scan_get_ap_records(&count, records.data());
+        if (err != ESP_OK) {
+            return err;
+        }
+    } else {
+        esp_wifi_clear_ap_list();
+    }
+
+    for (uint16_t i = 0; i < count; i++) {
+        std::string ssid((const char*)records[i].ssid);
+        if (ssid.empty()) {
+            continue;  // Hidden network
+        }
+        auto it = std::find_if(results.begin(), results.end(),
+                               [&](const WifiScanResult& r) { return r.ssid == ssid; });
+        if (it == results.end()) {
+            results.push_back({ssid, records[i].rssi, records[i].authmode == WIFI_AUTH_OPEN});
+        } else if (records[i].rssi > it->rssi) {
+            it->rssi = records[i].rssi;
+        }
+    }
+
+    std::sort(results.begin(), results.end(),
+              [](const WifiScanResult& a, const WifiScanResult& b) { return a.rssi > b.rssi; });
+    ESP_LOGI(TAG, "Scan found %d networks", (int)results.size());
+    return ESP_OK;
+}
+
+// Redraws the screen immediately, so progress messages show before a blocking step.
+// Callers already hold the display lock.
+void SSHTerminal::refresh_display_now()
+{
+    if (terminal_output) {
+        lv_refr_now(NULL);
+    }
 }
 
 bool SSHTerminal::is_wifi_connected()
@@ -338,14 +424,13 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
         "  ================================================\n"
         "\n"
         "  Commands:\n"
-        "   connect <SSID> <PASSWORD>  - WiFi connect\n"
-        "     Use quotes for spaces: connect \"My WiFi\" \"my pass\"\n"
-        "   ssh <HOST> <PORT> <USER> <PASS> - SSH\n"
-        "   sshkey <HOST> <PORT> <USER> <KEYFILE> - SSH key\n"
+        "   wifi    - WiFi menu (scan, pick, save)\n"
+        "   profile - Saved SSH connections menu\n"
+        "   vault   - Master PIN for saved passwords\n"
         "   disconnect - WiFi off | exit - SSH off\n"
-        "   clear - Clear screen | help - Show help\n"
+        "   clear - Clear screen | help - All commands\n"
         "\n"
-        "  Ready. Type 'connect' to start...\n\n";
+        "  Ready. Type 'wifi' to start...\n\n";
     
     lv_textarea_set_text(terminal_output, logo);
 
@@ -402,13 +487,31 @@ void SSHTerminal::clear_terminal()
 
 void SSHTerminal::handle_key_input(char key)
 {
-    if (key == '\n' || key == '\r') {
+    if (wizard_active() && (key == '\n' || key == '\r')) {
+        // Wizard answers are never added to command history (they may be passwords)
+        std::string answer = current_input;
+        current_input.clear();
+        cursor_pos = 0;
+        history_index = -1;
+        wizard_handle_input(answer);
+    } else if (wizard_active() && key == 27) {
+        current_input.clear();
+        cursor_pos = 0;
+        append_text("\nCancelled.\n");
+        wizard_reset();
+    } else if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
             append_text("\n> ");
             append_text(current_input.c_str());
             append_text("\n");
             
-            if (current_input.rfind("connect ", 0) == 0) {
+            if (current_input == "connect" || current_input == "wifi" || current_input.rfind("wifi ", 0) == 0) {
+                handle_wifi_command(current_input == "connect" ? "wifi scan" : current_input);
+            }
+            else if (current_input == "vault" || current_input.rfind("vault ", 0) == 0) {
+                handle_vault_command(current_input);
+            }
+            else if (current_input.rfind("connect ", 0) == 0) {
                 // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
                 std::vector<std::string> args;
                 std::string arg;
@@ -489,16 +592,22 @@ void SSHTerminal::handle_key_input(char key)
                     int port = std::atoi(parts[2].c_str());
                     std::string user = parts[3];
                     std::string keyfile = parts[4];
+                    std::string passphrase = parts.size() >= 6 ? parts[5] : "";
                     
                     // Try to load key from memory
                     size_t key_len = 0;
                     const char* key_data = get_loaded_key(keyfile.c_str(), &key_len);
                     
-                    if (key_data && key_len > 0) {
+                    if (key_data && key_len > 0 && key_is_encrypted(keyfile) && passphrase.empty()) {
+                        append_text("Key is passphrase-protected:\n");
+                        append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> <PASSPHRASE>\n");
+                        append_text("  or save it in a profile: profile add\n");
+                    } else if (key_data && key_len > 0) {
                         append_text("Using key file: ");
                         append_text(keyfile.c_str());
                         append_text("\n");
-                        connect_with_key(host.c_str(), port, user.c_str(), key_data, key_len);
+                        connect_with_key(host.c_str(), port, user.c_str(), key_data, key_len,
+                                         passphrase.empty() ? NULL : passphrase.c_str());
                     } else {
                         append_text("ERROR: Key file not found: ");
                         append_text(keyfile.c_str());
@@ -511,21 +620,16 @@ void SSHTerminal::handle_key_input(char key)
                         append_text("\n");
                     }
                 } else {
-                    append_text("Usage: sshkey <HOST> <PORT> <USER> <KEYFILE>\n");
+                    append_text("Usage: sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]\n");
                     append_text("  Example: sshkey 192.168.1.100 22 pi default.pem\n");
                 }
             }
+            else if (current_input == "profile" || current_input == "profiles" ||
+                     current_input.rfind("profile ", 0) == 0 || current_input.rfind("profiles ", 0) == 0) {
+                handle_profile_command(current_input);
+            }
             else if (current_input == "disconnect") {
-                if (wifi_connected) {
-                    append_text("Disconnecting WiFi...\n");
-                    s_retry_num = WIFI_MAXIMUM_RETRY;
-                    esp_wifi_disconnect();
-                    wifi_connected = false;
-                    update_status_bar();
-                    append_text("WiFi disconnected\n");
-                } else {
-                    append_text("WiFi not connected\n");
-                }
+                disconnect_wifi();
             }
             else if (current_input == "exit") {
                 disconnect();
@@ -535,11 +639,18 @@ void SSHTerminal::handle_key_input(char key)
             }
             else if (current_input == "help") {
                 append_text("Available commands:\n");
+                append_text("  wifi - WiFi menu: scan, pick a network, save it\n");
+                append_text("  wifi scan|saved|list|forget|off\n");
+                append_text("  connect - Scan and pick a WiFi network\n");
                 append_text("  connect <SSID> <PASSWORD> - Connect to WiFi\n");
                 append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
                 append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
-                append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> - Connect via SSH with private key\n");
+                append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE] - SSH with key\n");
                 append_text("    Note: Place .pem keys in /sdcard/ssh_keys/ before use\n");
+                append_text("  profile - Saved connection profiles menu\n");
+                append_text("  profile list|add - List or create profiles\n");
+                append_text("  profile connect|edit|delete [NAME|#]\n");
+                append_text("  vault - PIN status | vault lock|unlock|pin|reset\n");
                 append_text("  disconnect - Disconnect WiFi\n");
                 append_text("  exit - Disconnect SSH\n");
                 append_text("  clear - Clear terminal\n");
@@ -587,7 +698,7 @@ void SSHTerminal::update_input_display()
         cursor_pos = current_input.length();
     }
     
-    std::string full_text = "> " + current_input;
+    std::string full_text = "> " + input_display_text();
     
     // Insert cursor at correct position
     if (cursor_visible) {
@@ -642,8 +753,9 @@ void SSHTerminal::input_touch_event_cb(lv_event_t* e)
         int32_t min_distance = INT32_MAX;
         
         // Check each character position
-        for (size_t i = 0; i <= terminal->current_input.length(); i++) {
-            std::string substr = terminal->current_input.substr(0, i);
+        std::string shown = terminal->input_display_text();
+        for (size_t i = 0; i <= shown.length(); i++) {
+            std::string substr = shown.substr(0, i);
             lv_point_t substr_size;
             lv_txt_get_size(&substr_size, substr.c_str(), font, 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
             int32_t char_x = substr_size.x;
@@ -696,6 +808,12 @@ void SSHTerminal::history_save_cb(lv_timer_t* timer)
 
 void SSHTerminal::navigate_history(int direction)
 {
+    if (wizard_active()) {
+        // In the profile wizard the trackball cycles menu choices instead of history
+        wizard_cycle_choice(direction);
+        return;
+    }
+    
     if (command_history.empty()) {
         return;
     }
@@ -946,6 +1064,29 @@ void SSHTerminal::clear_history_nvs()
     nvs_close(nvs_handle);
 }
 
+// Accepts a dotted IPv4 address or a host name (resolved via DNS)
+static esp_err_t resolve_host(const char* host, struct in_addr* addr)
+{
+    if (inet_aton(host, addr)) {
+        return ESP_OK;
+    }
+
+    struct addrinfo hints = {};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = NULL;
+
+    int err = getaddrinfo(host, NULL, &hints, &res);
+    if (err != 0 || !res) {
+        ESP_LOGE(TAG, "DNS lookup failed for %s: %d", host, err);
+        return ESP_FAIL;
+    }
+
+    *addr = ((struct sockaddr_in*)res->ai_addr)->sin_addr;
+    freeaddrinfo(res);
+    return ESP_OK;
+}
+
 int SSHTerminal::waitsocket(int socket_fd, LIBSSH2_SESSION *session)
 {
     struct timeval timeout;
@@ -1005,7 +1146,13 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
-    sin.sin_addr.s_addr = inet_addr(host);
+    if (resolve_host(host, &sin.sin_addr) != ESP_OK) {
+        append_text("ERROR: Could not resolve host\n");
+        close(ssh_socket);
+        ssh_socket = -1;
+        libssh2_exit();
+        return ESP_FAIL;
+    }
 
     struct timeval timeout;
     timeout.tv_sec = 10;
@@ -1073,7 +1220,8 @@ esp_err_t SSHTerminal::connect(const char* host, int port, const char* username,
     return ESP_OK;
 }
 
-esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len)
+esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* username, const char* privkey_data, size_t privkey_len,
+                                        const char* passphrase)
 {
     if (!wifi_connected) {
         ESP_LOGE(TAG, "WiFi not connected");
@@ -1104,7 +1252,13 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
 
     sin.sin_family = AF_INET;
     sin.sin_port = htons(port);
-    sin.sin_addr.s_addr = inet_addr(host);
+    if (resolve_host(host, &sin.sin_addr) != ESP_OK) {
+        append_text("ERROR: Could not resolve host\n");
+        close(ssh_socket);
+        ssh_socket = -1;
+        libssh2_exit();
+        return ESP_FAIL;
+    }
 
     struct timeval timeout;
     timeout.tv_sec = 10;
@@ -1149,7 +1303,7 @@ esp_err_t SSHTerminal::connect_with_key(const char* host, int port, const char* 
     ESP_LOGI(TAG, "SSH handshake successful");
     append_text("SSH handshake successful\n");
 
-    if (ssh_authenticate_pubkey(username, privkey_data, privkey_len) != ESP_OK) {
+    if (ssh_authenticate_pubkey(username, privkey_data, privkey_len, passphrase) != ESP_OK) {
         append_text("ERROR: Public key authentication failed\n");
         disconnect();
         return ESP_FAIL;
@@ -1193,7 +1347,8 @@ esp_err_t SSHTerminal::ssh_authenticate(const char* username, const char* passwo
     return ESP_OK;
 }
 
-esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char* privkey_data, size_t privkey_len)
+esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char* privkey_data, size_t privkey_len,
+                                               const char* passphrase)
 {
     append_text("Authenticating as ");
     append_text(username);
@@ -1204,13 +1359,17 @@ esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char*
     while ((rc = libssh2_userauth_publickey_frommemory(session, username, strlen(username),
                                                          NULL, 0,  // public key (optional)
                                                          privkey_data, privkey_len,
-                                                         NULL)) == LIBSSH2_ERROR_EAGAIN);  // no passphrase
+                                                         passphrase)) == LIBSSH2_ERROR_EAGAIN);
     
     if (rc) {
         char *err_msg;
         int err_len;
         libssh2_session_last_error(session, &err_msg, &err_len, 0);
         ESP_LOGE(TAG, "Public key authentication failed: %s (error code: %d)", err_msg, rc);
+        if (rc == LIBSSH2_ERROR_FILE) {
+            append_text(passphrase ? "ERROR: Could not decrypt key - wrong passphrase or unsupported cipher\n"
+                                   : "ERROR: Could not read key (passphrase needed or unsupported format)\n");
+        }
         append_text("ERROR: Public key authentication failed\n");
         return ESP_FAIL;
     }
@@ -1611,6 +1770,12 @@ void SSHTerminal::send_special_key(const char* sequence)
     
     if (strcmp(sequence, "CLEAR") == 0) {
         clear_terminal();
+        toggle_side_panel();
+        return;
+    }
+    
+    if (strcmp(sequence, "\x1B") == 0 && wizard_active()) {
+        handle_key_input(27);
         toggle_side_panel();
         return;
     }

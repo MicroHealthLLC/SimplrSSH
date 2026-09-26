@@ -4,6 +4,11 @@ set(SOURCES
     "battery_measurement.cpp"
     "c3_keyboard.cpp"
     "ssh_terminal.cpp"
+    "connection_profiles.cpp"
+    "profile_menu.cpp"
+    "wifi_menu.cpp"
+    "vault_menu.cpp"
+    "secret_vault.cpp"
     "lvgl_pepboy_img/pepboy_0.c"
     "lvgl_pepboy_img/pepboy_1.c"
     "lvgl_pepboy_img/pepboy_2.c"
@@ -31,6 +36,8 @@ set(REQUIRED_COMPONENTS
     esp_netif
     esp_event
     esp_timer
+    spiffs
+    mbedtls
 )
 
 idf_component_register(

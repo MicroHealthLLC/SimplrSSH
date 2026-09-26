@@ -32,6 +32,29 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
+### Unreleased
+- **Added**: WiFi setup wizard (`wifi` command, or `connect` with no arguments)
+  - Scans for networks and shows them strongest first with signal bars; pick one by number
+  - Password is typed masked; hidden networks supported
+  - Save several networks (up to 10) and switch between them from the menu
+  - At boot, auto-connects to the strongest saved network in range
+- **Added**: SSH connection profiles wizard (`profile` command)
+  - List, add, edit, delete and connect with saved profiles from a numbered menu
+  - SSH keys are picked from a list of the keys on the SD card, so nothing has to be typed
+- **Added**: Encrypted password vault protected by a master PIN
+  - WiFi passwords, SSH passwords and SSH key passphrases are stored as AES-256-GCM encrypted
+    files on the internal `storage` flash partition, never in plain text
+  - `vault` command to lock, unlock, change the PIN or erase all saved passwords
+- **Added**: Passphrase-protected SSH keys (`sshkey ... <PASSPHRASE>` or a saved profile)
+- **Added**: Host names are resolved via DNS for `ssh`, `sshkey` and profiles (previously IP addresses only)
+- **Improved**: Trackball up/down cycles menu choices; trackball press confirms
+- **Improved**: WiFi driver starts once and switches networks cleanly; a dropped connection is reported
+- **Fixed**: Touch screen initialization no longer fails to compile with current component
+  versions (GT911 I2C config is set field by field at 100 kHz)
+- **Build**: All ESP-IDF component versions pinned (`main/idf_component.yml` + `dependencies.lock`)
+- **CI**: GitHub Actions build the merged release image, run non-blocking code quality checks
+  (cppcheck, flawfinder, compiler warnings), and report outdated dependencies
+
 ### v1.2.0 (Faburary 1, 2026)
 - **Added**: SSH public key authentication support
   - SD card SSH key management - automatically loads all `.pem` files from `/sdcard/ssh_keys/` on boot
@@ -118,59 +141,190 @@ Quick access to commonly used control sequences:
 ## Quick Start
 
 ### Prerequisites
-- ESP-IDF v5.5.1
-- ESP32-S3 T-Deck/T-Deck Plus
+- LilyGO T-Deck / T-Deck Plus (ESP32-S3)
+- The firmware image `PocketSSH-v<version>-release.bin` from the GitHub releases or Actions
+  artifacts (see [Deployment](#deployment)), or ESP-IDF v5.5.1 to [build it yourself](#building-from-source)
 
 ### First-Time Setup
 
-1. **Connect to WiFi**:
-   ```
-   connect <SSID> <PASSWORD>
-   ```
-   Example: `connect MyNetwork MyPassword123`
-   
-   **For SSIDs or passwords with spaces**, use double quotes:
-   ```
-   connect "My WiFi Network" "my password 123"
-   ```
+Everything is menu driven: type a command, then answer each prompt by typing a number (or text)
+and pressing Enter. You can also **roll the trackball** to cycle through the numbered choices and
+**press it** to confirm. Type `cancel` (or tap Esc in the special keys panel) at any prompt to back out.
 
-2. **Connect to SSH Server**:
-   
-   **With Password**:
-   ```
-   ssh <HOST> <PORT> <USER> <PASSWORD>
-   ```
-   Example: `ssh 192.168.1.100 22 pi raspberry`
-   
-   **With Public Key**:
-   ```
-   sshkey <HOST> <PORT> <USER> <KEYFILE>
-   ```
-   Example: `sshkey 192.168.1.100 22 pi rpi_key.pem`
+1. **Connect to WiFi** - type `wifi` and choose *Scan and connect*, pick your network, enter the
+   password, and answer `y` to save it. The first time you save a password you'll create a
+   **master PIN** that encrypts it (see [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin)).
 
-3. **Use Interactive Shell**:
-   Once connected, any command you type is sent to the remote server:
+2. **Save an SSH server** - type `profile`, choose *Add*, and fill in name, host, port and user.
+   Pick an SSH key from the list of keys on the SD card, or choose password login.
+
+3. **Connect** - type `profile`, choose *Connect*, and pick the server. Or type
+   `profile connect <name>` directly.
+
+4. **Use the shell** - once connected, anything you type is sent to the server:
    ```
    ls -la
    cd /home
-   top
    vim myfile.txt
    ```
 
-4. **Disconnect**:
-   - Type `disconnect` command, or
-   - Use Disconnect button in special keys panel
+5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH;
+   `disconnect` turns WiFi off.
 
-### Available Local Commands
+On later boots the device **auto-connects to the strongest saved WiFi network in range** once
+you dismiss the splash screen (it asks for your PIN first if that network's password is saved).
+Then just type `profile` and pick a server.
 
-These commands are executed locally on the device (not sent to SSH):
-- `help` - Display available commands and usage
-- `clear` - Clear the terminal display
-- `disconnect` - Close WiFi connection
-- `exit` - Close SSH connection
-- `connect <SSID> <PASS>` - Connect to WiFi network (use quotes for spaces: `connect "My WiFi" password`)
-- `ssh <HOST> <PORT> <USER> <PASS>` - Establish SSH connection (password auth)
-- `sshkey <HOST> <PORT> <USER> <KEYFILE>` - Establish SSH connection (public key auth from SD card)
+## WiFi Wizard
+
+Type `wifi` (or `connect` on its own) to open the WiFi menu:
+
+```
+== WiFi ==
+Not connected
+ 1) Scan and connect
+ 2) Connect to saved network
+ 3) Forget saved network
+ 4) Disconnect
+ 0) Exit menu
+Select [0-4]: 1
+Scanning for networks...
+Networks (strongest first):
+ 1) Office  ####
+ 2) HomeNet  ### saved
+ 3) Cafe  ## open
+ 4) Hidden network...
+ 5) Scan again
+ 0) Back
+Select [1-5, 0=back]: 2
+Password for HomeNet (Enter = back): ********
+Connecting to HomeNet...
+Connected to HomeNet.
+Save HomeNet so it auto-connects? (y/n) [y]: y
+Saved HomeNet (password encrypted).
+```
+
+- **Signal bars**: `####` excellent, `###` good, `##` fair, `#` weak. `open` = no password,
+  `saved` = already saved, `connected` = the current network.
+- **Saved networks** connect without asking for the password (the PIN is asked once if the vault is locked).
+- **Wrong password?** You're asked again; press Enter on an empty password to go back.
+- **Switching networks**: pick a different network from *Scan and connect* or *Connect to saved
+  network* at any time. Close SSH first (`exit`), since changing WiFi drops the session.
+- **Hidden networks**: choose *Hidden network...* and type the SSID.
+- **Auto-connect**: at boot the device scans and joins the strongest saved network in range,
+  falling back to the next one if that fails. Up to 10 networks can be saved.
+- The one-line form still works: `connect <SSID> <PASSWORD>` (use quotes for spaces:
+  `connect "My WiFi" "my pass"`). It does not save the network.
+
+| Command | What it does |
+|---|---|
+| `wifi` | Open the WiFi menu |
+| `wifi scan` or `connect` | Scan and pick a network |
+| `wifi saved` | Pick a saved network to connect to |
+| `wifi list` | List saved networks |
+| `wifi forget [SSID or #]` | Forget a saved network and its password |
+| `wifi off` or `disconnect` | Disconnect WiFi |
+
+## Connection Profiles Wizard
+
+Save an SSH server once, then connect by picking it from a menu. Type `profile`:
+
+```
+== Connection Profiles ==
+ 1) Connect
+ 2) List
+ 3) Add
+ 4) Edit
+ 5) Delete
+ 0) Exit menu
+Select [0-5]: 3
+-- New profile ('cancel' or Esc to abort) --
+Name: pi
+Host/IP: 192.168.1.100
+Port [22]:
+Username: pi
+Authentication:
+ 1) SSH key from SD card
+ 2) Password
+Select [1]: 1
+SSH keys on SD card:
+ 1) rpi_key.pem
+ 2) server1.pem (passphrase)
+Select key [1-2, 0=back]: 1
+-- Review --
+ Name: pi
+ pi@192.168.1.100 [key rpi_key.pem]
+ 1) Save
+ 2) Save and connect
+ 3) Change something
+ 0) Discard
+Select [1]: 2
+```
+
+- **Keys** are chosen from the `.pem` files loaded from `/sdcard/ssh_keys/` at boot. Keys marked
+  `(passphrase)` are passphrase-protected; you're asked for the passphrase next.
+- **Passwords and passphrases** are masked while typing. Type one to save it encrypted, or press
+  Enter without typing to be asked each time you connect.
+- **Editing** shows the current value in `[brackets]`; press Enter to keep it. For a saved
+  password, Enter keeps it and `-` switches to asking each time. Switching to a different key or
+  login method drops the old saved secret.
+- Host can be an IP address or a host name. Up to 20 profiles.
+
+| Command | What it does |
+|---|---|
+| `profile` | Open the profiles menu |
+| `profile list` | List saved profiles |
+| `profile add` | Add a profile |
+| `profile connect [NAME or #]` | Connect (omit the name to pick from a list) |
+| `profile edit [NAME or #]` | Edit a profile |
+| `profile delete [NAME or #]` | Delete a profile and its saved password |
+
+## Saved Passwords and the Master PIN
+
+WiFi passwords, SSH passwords and SSH key passphrases are **never stored in plain text**. They
+are saved as encrypted files on the device's internal `storage` flash partition:
+
+- Each secret is encrypted with **AES-256-GCM** using a random 256-bit data key.
+- The data key is itself encrypted with a key derived from your **master PIN**
+  (PBKDF2-HMAC-SHA256, 20,000 iterations, random salt). The PIN is never stored.
+- File names are hashes, so SSIDs and server names don't appear on flash either.
+
+**Creating the PIN**: the first time you save a password, you're asked to create a PIN
+(at least 4 characters; longer is stronger) and type it twice.
+
+**Unlocking**: the vault is locked at every boot. The first time a saved password is needed
+(auto-connecting WiFi, or connecting a profile) you're asked for the PIN once; it stays unlocked
+until you reboot or type `vault lock`. Press Enter at the PIN prompt to skip.
+
+| Command | What it does |
+|---|---|
+| `vault` | Show whether a PIN is set and whether the vault is unlocked |
+| `vault unlock` | Enter the PIN now |
+| `vault lock` | Forget the key until the PIN is entered again |
+| `vault pin` | Change the PIN (saved passwords are kept) |
+| `vault reset` | Forgot the PIN? Erase all saved passwords and the PIN. Profiles and networks are kept; you'll be asked for their passwords again |
+
+> **Security notes:** the PIN can't be recovered. Anyone who can read the device's flash can try
+> to guess a short PIN offline, so use 6+ characters (letters and digits) if the device might be
+> lost. Wizard answers (passwords, PINs) are never written to command history. Passwords typed
+> directly on the `connect`/`ssh`/`sshkey` command lines *are* kept in command history.
+
+## All Local Commands
+
+These run on the device (they are not sent to the SSH server):
+
+| Command | What it does |
+|---|---|
+| `wifi` / `connect` | WiFi wizard (see [WiFi Wizard](#wifi-wizard)) |
+| `connect <SSID> <PASS>` | Connect to WiFi directly (quotes for spaces) |
+| `disconnect` | Turn WiFi off |
+| `profile` | SSH profiles wizard (see [Connection Profiles Wizard](#connection-profiles-wizard)) |
+| `ssh <HOST> <PORT> <USER> <PASS>` | SSH with a password, without a profile |
+| `sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]` | SSH with an SD card key, without a profile |
+| `vault` | Master PIN and saved passwords (see [above](#saved-passwords-and-the-master-pin)) |
+| `exit` | Close the SSH session |
+| `clear` | Clear the screen |
+| `help` | Show the command list |
 
 ## SSH Key Setup Guide
 
@@ -243,7 +397,9 @@ sshkey 192.168.1.100 22 pi rpi_key.pem
 **Supported Formats**
 - File extension: `.pem` or `.PEM` (case-insensitive)
 - Key type: RSA keys in PEM format only
-- Passphrase: Not supported (use `-N ""` when generating)
+- Passphrase: Optional. Protected keys show `(passphrase)` in the profile key list;
+  generate them with `ssh-keygen -t rsa -b 4096 -m PEM -f rpi_key -N "your passphrase"`
+  (AES-128-CBC). Keys encrypted with DES/3DES (e.g. `openssl genrsa -des3`) are not supported.
 - Max file size: 16KB per key
 
 **Available Keys Display**
@@ -364,7 +520,7 @@ PocketSSH supports SSH public key authentication using keys loaded from SD card:
 **Key Requirements:**
 - **Format**: PEM format RSA keys (OpenSSH format not supported by mbedTLS)
 - **File Extension**: `.pem` or `.PEM` (case-insensitive)
-- **Passphrase**: Only passphrase-less keys supported
+- **Passphrase**: Optional (AES-encrypted PEM keys); passed to libssh2 from a profile's saved passphrase or the `sshkey` command
 - **Max Size**: 16KB per key file
 
 **Usage:**
@@ -403,7 +559,7 @@ See **SSH Key Setup Guide** section above for detailed setup instructions.
   - Password-based (username/password)
   - Public key-based (RSA keys in PEM format)
 - **Session**: Secure encrypted channel for all data transfer
-- **Key handling**: Private keys processed in memory, not persisted to storage
+- **Key handling**: Private keys are read from the SD card into memory; they are not copied to flash
 
 ### Component Configuration
 
@@ -473,20 +629,19 @@ Disconnected from SSH server
 ## Security Considerations
 
 **Current Security Features:**
-- Uses SSH2 protocol with encryption (secure!)
-- Passwords are encrypted during transmission
-- Public key authentication support (v1.2.0+)
-- Full cipher support (AES, 3DES, Blowfish, etc.)
-- Private keys handled in memory only
+- Uses SSH2 protocol with encryption
+- Public key authentication, including passphrase-protected keys
+- Saved WiFi passwords, SSH passwords and key passphrases are encrypted at rest
+  (AES-256-GCM, key wrapped under a PBKDF2-derived master PIN key; see
+  [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin))
+- Private keys are read from the SD card into memory only; they are not copied to flash
 
 **Security Notes:**
-- Passwords/keys stored in memory during session only
 - No host key verification (accepts any server)
-- Public key authentication is more secure than passwords
-- Private keys are not persisted to storage
+- Passwords typed on the `connect`/`ssh`/`sshkey` command lines are kept in command history (NVS);
+  use the wizards to avoid this
 - **Recommended for production**:
   - Add host key verification
-  - Implement encrypted storage for private keys
   - Use ESP32's secure boot and flash encryption
   - Consider secure element integration for key storage
 
@@ -514,6 +669,9 @@ Disconnected from SSH server
 ## Troubleshooting
 
 ### WiFi Connection Issues
+- Use `wifi` then *Scan and connect* to check the network is visible and pick it from the list
+- Auto-connect needs the network saved (`wifi list`) and in range; if you skip the PIN at boot,
+  networks with saved passwords are not tried
 - Check SSID and password are correct (use quotes if they contain spaces)
 - Verify WiFi router is in range
 - Ensure WPA2-PSK authentication is supported
@@ -555,8 +713,13 @@ Disconnected from SSH server
 
 ### Release Firmware Image
 
-A ready-to-deploy **merged binary** is available that includes bootloader, partition table, and application:
-- **File**: `build/PocketSSH-v1.2.0-release.bin`
+A ready-to-deploy **merged binary** includes the bootloader, partition table, and application:
+- **File**: `PocketSSH-v<version>-release.bin` (e.g. `PocketSSH-v1.2.0-release.bin`)
+- **Where to get it**:
+  - **Releases**: attached to each GitHub release (built automatically when a `v*` tag is pushed)
+  - **Any commit**: open the *Build firmware* workflow run in the Actions tab and download the
+    `PocketSSH-v<version>` artifact
+  - **Local build**: `build/PocketSSH-v<version>-release.bin` (see [Building from Source](#building-from-source))
 - **Flash Address**: `0x0` (single merged binary)
 - **Flash Settings**: 
   - **Mode**: DIO (Dual I/O)
@@ -577,6 +740,49 @@ Flash firmware via browser using ESP Web Flasher:
 ```bash
 esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 build/PocketSSH-v1.2.0-release.bin
 ```
+
+## Building from Source
+
+Requires **ESP-IDF v5.5.1** (other 5.5.x patch releases should work).
+
+```bash
+. $IDF_PATH/export.sh
+idf.py build
+idf.py merge-bin -o PocketSSH-v1.2.0-release.bin   # -> build/PocketSSH-v1.2.0-release.bin
+idf.py -p /dev/ttyACM0 flash monitor               # or flash the merged image at 0x0
+```
+
+The first build downloads the ESP-IDF components listed in `main/idf_component.yml` into
+`managed_components/`, at the exact versions recorded in `dependencies.lock`.
+
+### Pinned Dependencies
+
+All dependencies are pinned so every build uses the same, tested code:
+
+| Dependency | Version | Pinned in |
+|---|---|---|
+| ESP-IDF | v5.5.1 | CI workflows (`.github/workflows/*.yml`), `~5.5.1` in `main/idf_component.yml` |
+| espressif/esp_bsp_generic | 3.1.1 | `main/idf_component.yml` |
+| espressif/esp_lcd_touch_gt911 | 1.2.1 | `main/idf_component.yml` |
+| lvgl/lvgl | 9.4.0 | `main/idf_component.yml` |
+| skuodi/libssh2_esp | 1.1.0 | `main/idf_component.yml` |
+| Everything else (esp_lvgl_port, esp_lcd_touch, ...) | see file | `dependencies.lock` |
+
+To update one: change its version in `main/idf_component.yml`, run `idf.py update-dependencies`,
+build, test on a T-Deck, and commit both files. The *Dependency check* workflow lists what is out of date.
+
+### Continuous Integration
+
+| Workflow | When | What it does | Blocks merges? |
+|---|---|---|---|
+| **Build firmware** (`build.yml`) | Push to `main`, pull requests, `v*` tags | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin`. On a `v*` tag it also creates a GitHub release with the image | Yes - the firmware must build |
+| **Code quality** (`code-quality.yml`) | Push to `main`, pull requests | cppcheck static analysis, flawfinder security lint, and compiler warnings in `main/`, shown as annotations on the changed lines and in each job's summary | No - report only |
+| **Dependency check** (`dependency-check.yml`) | Weekly, and when pins change | Compares pinned components and ESP-IDF with the latest releases | No - report only |
+| **Dependabot** (`.github/dependabot.yml`) | Weekly | Opens PRs to update the GitHub Actions used above | - |
+
+**Cutting a release**: set `PROJECT_VER` in the top-level `CMakeLists.txt` (e.g. `1.3.0`), add a
+Version History entry, commit, then tag and push: `git tag v1.3.0 && git push origin v1.3.0`.
+The build fails if the tag doesn't match `PROJECT_VER`.
 
 ## Credits
 

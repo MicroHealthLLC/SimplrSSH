@@ -1,0 +1,8 @@
+# Keeps the GitHub Actions used by the workflows up to date.
+# (ESP-IDF components aren't supported by Dependabot; see the "Dependency check" workflow.)
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,107 @@
+# Builds the LilyGO T-Deck (ESP32-S3) firmware and packages it as a single merged
+# image, build/PocketSSH-v<version>-release.bin, to flash at offset 0x0
+# (DIO, 80 MHz, 16 MB). Pushing a tag "v<version>" also publishes a GitHub release.
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ESP_IDF_VERSION: v5.5.1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read firmware version
+        id: version
+        run: |
+          version=$(sed -n 's/^set(PROJECT_VER "\(.*\)").*/\1/p' CMakeLists.txt | tr -d '\r')
+          if [ -z "$version" ]; then echo "::error file=CMakeLists.txt::PROJECT_VER not found"; exit 1; fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Firmware version: $version"
+
+      - name: Check tag matches firmware version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "v${{ steps.version.outputs.version }}" ]; then
+            echo "::error file=CMakeLists.txt::Tag ${GITHUB_REF_NAME} does not match PROJECT_VER ${{ steps.version.outputs.version }}"
+            exit 1
+          fi
+
+      - name: Build and merge image (ESP-IDF ${{ env.ESP_IDF_VERSION }})
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.1
+          target: esp32s3
+          # The action wraps this in bash -c '...', so it must not contain single quotes
+          command: >-
+            set -o pipefail &&
+            idf.py build 2>&1 | tee build-output.log &&
+            idf.py merge-bin -o PocketSSH-v${{ steps.version.outputs.version }}-release.bin
+
+      - name: Summarize
+        run: |
+          bin=build/PocketSSH-v${{ steps.version.outputs.version }}-release.bin
+          size=$(stat -c %s "$bin")
+          {
+            echo "## PocketSSH v${{ steps.version.outputs.version }}"
+            echo ""
+            echo "| File | Size | Flash at |"
+            echo "|---|---|---|"
+            echo "| \`$(basename "$bin")\` | $size bytes | \`0x0\` (DIO, 80 MHz, 16 MB) |"
+            echo ""
+            echo "Flash: \`esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 $(basename "$bin")\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report compiler warnings (non-blocking)
+        if: always()
+        continue-on-error: true
+        run: python3 .github/scripts/report_warnings.py build-output.log
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: PocketSSH-v${{ steps.version.outputs.version }}
+          path: |
+            build/PocketSSH-v${{ steps.version.outputs.version }}-release.bin
+            build/PocketSSH.bin
+            build/bootloader/bootloader.bin
+            build/partition_table/partition-table.bin
+            build/flash_args
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PocketSSH-v${{ needs.build.outputs.version }}
+          path: firmware
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: firmware/PocketSSH-v${{ needs.build.outputs.version }}-release.bin
+          generate_release_notes: true
+          body: |
+            Flash `PocketSSH-v${{ needs.build.outputs.version }}-release.bin` at offset `0x0`
+            (ESP32-S3, DIO, 80 MHz, 16 MB), e.g. with https://espressif.github.io/esptool-js/ or:
+
+            ```
+            esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 PocketSSH-v${{ needs.build.outputs.version }}-release.bin
+            ```
