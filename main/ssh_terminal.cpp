@@ -419,6 +419,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
         "   wifi    - WiFi menu (scan, pick, save)\n"
         "   profile - Saved SSH connections menu\n"
         "   vault   - Master PIN for saved passwords\n"
+        "   storage - Back up / restore settings (SD)\n"
         "   disconnect - WiFi off | exit - SSH off\n"
         "   clear - Clear screen | help - All commands\n"
         "\n"
@@ -552,6 +553,9 @@ void SSHTerminal::handle_key_input(char key)
             else if (current_input == "hosts" || current_input.rfind("hosts ", 0) == 0) {
                 handle_hosts_command(current_input);
             }
+            else if (current_input == "storage" || current_input.rfind("storage ", 0) == 0) {
+                handle_storage_command(current_input);
+            }
             else if (current_input.rfind("connect ", 0) == 0) {
                 // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
                 std::vector<std::string> args;
@@ -587,6 +591,11 @@ void SSHTerminal::handle_key_input(char key)
                     
                     if (init_wifi(ssid.c_str(), password.c_str()) == ESP_OK) {
                         append_text("WiFi connected successfully!\n");
+                        // Offer to keep it, so it reconnects after a restart
+                        wizard_reset();
+                        wizard.wifi_ssid = ssid;
+                        wizard.secret = password;
+                        wizard_goto(WizardStep::WifiSave);
                     } else {
                         append_text("WiFi connection failed!\n");
                     }
@@ -712,6 +721,7 @@ void SSHTerminal::handle_key_input(char key)
                 append_text("  profile connect|edit|delete [NAME|#]\n");
                 append_text("  vault - PIN status | vault lock|unlock|pin|reset\n");
                 append_text("  hosts - Trusted server keys | hosts forget [HOST|#]\n");
+                append_text("  storage - Saved settings: SD backup/restore, load keys\n");
                 append_text("  disconnect - Disconnect WiFi\n");
                 append_text("  exit - Disconnect SSH\n");
                 append_text("  clear - Clear terminal\n");

@@ -18,6 +18,7 @@
 #include "mbedtls/platform_util.h"
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <vector>
 #include <dirent.h>
 
@@ -426,6 +427,54 @@ bool vault::has(const std::string& id)
         return true;
     }
     return false;
+}
+
+bool vault::is_vault_file_name(const std::string& name)
+{
+    if (name == "vault.key") {
+        return true;
+    }
+    if (name.size() != 21 || name[0] != 's' || name.compare(17, 4, ".enc") != 0) {
+        return false;
+    }
+    for (size_t i = 1; i < 17; i++) {
+        if (!isxdigit((unsigned char)name[i]) || isupper((unsigned char)name[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::vector<std::string> vault::list_files()
+{
+    std::vector<std::string> names;
+    DIR* dir = s_mounted ? opendir(s_base_path.c_str()) : NULL;
+    if (dir) {
+        struct dirent* entry;
+        while ((entry = readdir(dir)) != NULL) {
+            if (is_vault_file_name(entry->d_name)) {
+                names.push_back(entry->d_name);
+            }
+        }
+        closedir(dir);
+    }
+    return names;
+}
+
+esp_err_t vault::read_raw(const std::string& name, std::vector<uint8_t>& data)
+{
+    if (!s_mounted || !is_vault_file_name(name)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return read_file(path_for(name.c_str()), data) ? ESP_OK : ESP_ERR_NOT_FOUND;
+}
+
+esp_err_t vault::write_raw(const std::string& name, const std::vector<uint8_t>& data)
+{
+    if (!s_mounted || !is_vault_file_name(name) || data.size() > 4096) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    return write_file(path_for(name.c_str()), data) ? ESP_OK : ESP_FAIL;
 }
 
 void vault::wipe(std::string& s)

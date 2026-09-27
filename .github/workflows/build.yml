@@ -64,6 +64,15 @@ jobs:
         if: steps.release.outputs.release == 'true'
         run: python3 .github/scripts/release_notes.py "${{ steps.version.outputs.version }}" check.bin 0 /dev/null > /dev/null
 
+      - name: Pull ESP-IDF image (retries transient registry errors)
+        run: |
+          for attempt in 1 2 3 4; do
+            docker pull espressif/idf:v5.5.1@sha256:dfa2d076c796769c07c155eba6c672b9f395aec943b2ba3701b73379b5f9e884 && exit 0
+            echo "Pull failed (attempt $attempt), retrying..."
+            sleep $((attempt * 15))
+          done
+          exit 1
+
       - name: Build and merge image (ESP-IDF ${{ env.ESP_IDF_VERSION }})
         uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5 # v1.2.0
         with:

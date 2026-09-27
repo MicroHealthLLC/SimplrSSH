@@ -54,12 +54,27 @@ keyboard and trackball. Every change should serve that job.
   live in `sdkconfig.defaults` with a comment explaining each one.
 - CI actions are pinned to commit SHAs and the build image to a digest; keep it that way.
 
+## Persistence
+
+- All settings persist on internal flash and must work without an SD card. NVS (`nvs`,
+  256 KB) and the vault (`storage`, SPIFFS) sit **after** the app in `partitions.csv`, so
+  flashing the merged image at 0x0 never erases them. Never move them before the app or
+  shrink them; changing their offsets wipes users' settings.
+- New persistent data goes in NVS namespaces listed in `settings_backup.cpp` (so backup,
+  restore and erase cover it) or in the vault if it's a secret. Check save errors and tell
+  the user.
+- The SD card is optional (key files, backups). It shares the display's SPI pins: at runtime
+  use `sdcard::mount()`/`unmount()` around a short operation while holding the display lock.
+- Anything read from the SD card is untrusted input: validate names, sizes and formats and
+  parse fully before changing device state.
+
 ## Hardware notes (T-Deck)
 
 - Display ST7789 320x240 over SPI; touch GT911 over I2C (100 kHz, 0x5D); keyboard is an
   ESP32-C3 on I2C 0x55; trackball on GPIO 1/2/3/15 with press on GPIO 0; battery ADC on
-  GPIO 4 (strapping pin: 100 ms settle before ADC init); SD card on SPI3 (CS 39), read only
-  at boot before LVGL starts because it shares the bus with the display.
+  GPIO 4 (strapping pin: 100 ms settle before ADC init); SD card CS 39 shares SCK/MOSI/MISO
+  (40/41/38) with the display: its own SPI3 bus at boot, a second device on the display's
+  SPI2 bus afterwards (MISO routed in by `sdcard::share_display_bus()`).
 - Board power must be enabled via GPIO 10 before peripherals are used.
 
 ## Code layout
@@ -73,6 +88,8 @@ keyboard and trackball. Every change should serve that job.
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
 | `main/vault_menu.cpp`, `main/secret_vault.cpp` | Master PIN prompts, encrypted secret storage |
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
+| `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
+| `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |
 
 ## Workflow
 

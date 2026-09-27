@@ -57,10 +57,17 @@ A full sweep for malicious code, unexpected data flows and vulnerabilities.
 | 7 | GitHub Actions and the build container referenced by mutable tags | Low | Actions pinned to commit SHAs, `espressif/idf` image pinned by digest; Dependabot updates them |
 | 8 | Unused attack surface and code: SoftAP + DHCP server, IPv6, libssh2 debug tracing, splash animation | Low | Disabled/removed (see `sdkconfig.defaults`) |
 
+### Persistence review (2026-09-27)
+
+| Finding | Fix |
+|---|---|
+| The WiFi driver stored its own plain-text copy of the WiFi password in NVS | `CONFIG_ESP_WIFI_NVS_ENABLED` off; networks are saved by the app with the password in the vault |
+| SD card backups could carry secrets or be tampered with | Backups hold only non-secret settings plus the already-encrypted vault files; restore accepts only known namespaces, NVS-sized keys/values and vault file names (no paths), and validates the whole backup before changing anything |
+
 ### Known residual risks
 
 - Flash is not encrypted. Non-secret data (profiles, known hosts, command history, SD keys while
-  inserted) can be read from the chip. Enable secure boot and flash encryption for high-risk use.
+  inserted) can be read from the chip, and from an SD card backup. Enable secure boot and flash encryption for high-risk use.
 - Private keys on the SD card are stored however you copied them; prefer passphrase-protected keys.
 - Deleted NVS entries are marked erased but may physically remain until the NVS page is recycled.
 - A server that adds a new host key type can trigger a "key changed" refusal; verify, then
