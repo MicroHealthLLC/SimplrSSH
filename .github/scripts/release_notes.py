@@ -2,9 +2,10 @@
 """
 Build GitHub release notes for a firmware version.
 
-Takes the "### v<version>" section from README.md's Version History and adds
-flashing instructions and the image checksum. Exits 1 (with an annotation) if
-the README has no section for the version, so a release never ships without notes.
+Uses the "### v<version>" section from README.md's Version History when there is
+one; otherwise (e.g. automatic patch releases) the notes point to the change list
+GitHub generates from the commits and pull requests since the previous release,
+which the workflow appends below. Adds flashing instructions and the image checksum.
 
 Usage: release_notes.py <version> <image-file-name> <sha256> <output.md>
 """
@@ -36,15 +37,13 @@ def main():
 
     with open("README.md", encoding="utf-8") as f:
         title, changes = version_section(f.read(), version)
-    if not changes:
-        print(f"::error file=README.md::No '### v{version}' section in the README Version History. "
-              f"Add release notes for v{version} before releasing.")
-        return 1
+    if changes:
+        whats_new = f"## What's new in {title}\n\n{changes}\n"
+    else:
+        whats_new = (f"## PocketSSH v{version}\n\n"
+                     "The changes in this release are listed under *What's Changed* below.\n")
 
-    notes = f"""## What's new in {title}
-
-{changes}
-
+    notes = f"""{whats_new}
 ## Install
 
 Download **`{image}`** below and flash it to the LilyGO T-Deck / T-Deck Plus at offset **`0x0`**
