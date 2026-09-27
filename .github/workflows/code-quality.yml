@@ -93,6 +93,15 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      - name: Pull ESP-IDF image (retries transient registry errors)
+        run: |
+          for attempt in 1 2 3 4; do
+            docker pull espressif/idf:v5.5.1@sha256:dfa2d076c796769c07c155eba6c672b9f395aec943b2ba3701b73379b5f9e884 && exit 0
+            echo "Pull failed (attempt $attempt), retrying..."
+            sleep $((attempt * 15))
+          done
+          exit 1
+
       - name: Build (ESP-IDF v5.5.1)
         uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5 # v1.2.0
         with:
