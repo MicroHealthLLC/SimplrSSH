@@ -246,6 +246,7 @@ bool SSHTerminal::host_step_input(const std::string& raw_input, const std::strin
             if (!yes) {
                 append_text("Not trusted - disconnected.\n");
                 ssh_teardown();
+                go_home();
             } else {
                 if (save_host_key(pending_ssh.host, pending_ssh.port, pending_ssh.key_type,
                                   pending_ssh.fingerprint) == ESP_OK) {

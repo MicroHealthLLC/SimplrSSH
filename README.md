@@ -32,6 +32,20 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
+### v1.4.0 (September 27, 2026)
+- **Added**: Home menu at startup - WiFi, SSH servers, ChatGPT, Storage, Security. `menu`
+  shows it anytime; `exit` returns to it (closing SSH first) instead of leaving you at a prompt
+- **Added**: ChatGPT app - chat with an OpenAI model over WiFi: your messages on the right,
+  replies on the left, streaming as they're written. One chat session; `clear` starts over
+- **Added**: Voice - hold the trackball to talk (T-Deck microphone -> OpenAI Whisper), let go to
+  send; optional spoken replies through the T-Deck speaker
+- **Added**: Choose the model (gpt-4o-mini, gpt-4.1-mini, gpt-4.1-nano, gpt-4o or any name); the
+  API key is typed or loaded from `openai.key` on the SD card, saved encrypted (PIN-protected if set)
+- **Improved**: Full-screen terminal - no borders, one-line status bar, more lines of text; drag
+  to scroll back; old lines are trimmed instead of the screen being wiped; SSH servers are told
+  the real screen width so output wraps to fit
+- **Fixed**: Long messages (over 256 characters) lost their beginning on screen
+
 ### v1.3.2 (September 27, 2026)
 - **Fixed**: WiFi networks now always save. Every network you connect to (with the `wifi` menu
   or `connect <SSID> <PASSWORD>`) is saved on the device right away, with its password
@@ -185,19 +199,31 @@ Quick access to commonly used control sequences:
 
 ### First-Time Setup
 
-Everything is menu driven: type a command, then answer each prompt by typing a number (or text)
-and pressing Enter. You can also **roll the trackball** to cycle through the numbered choices and
-**press it** to confirm. Type `cancel` (or tap Esc in the special keys panel) at any prompt to back out.
+The device starts at the **home menu**:
 
-1. **Connect to WiFi** - type `wifi` and choose *Scan and connect*, pick your network and enter
-   the password. That's it: the network is saved on the device (password encrypted) and it
-   reconnects automatically from now on.
+```
+== PocketSSH ==
+WiFi: HomeNet | Saved: 2 WiFi, 3 SSH
+ 1) WiFi
+ 2) SSH servers
+ 3) ChatGPT
+ 4) Storage (device / SD card)
+ 5) Security (PIN, server keys)
+Select 1-5, or type a command:
+```
 
-2. **Save an SSH server** - type `profile`, choose *Add*, and fill in name, host, port and user.
-   Pick an SSH key from the list of keys on the SD card, or choose password login.
+Type a number and press Enter (or roll the trackball to pick, press it to confirm). Every
+screen has `0) Back`; `menu` or `exit` always brings you home, and `cancel` (or Esc in the
+special keys panel) backs out of any prompt. The numbers 1-5 work even when the menu isn't
+on screen.
 
-3. **Connect** - type `profile`, choose *Connect*, and pick the server. Or type
-   `profile connect <name>` directly.
+1. **WiFi** (1) - *Scan and connect*, pick your network and enter the password. That's it: the
+   network is saved on the device (password encrypted) and it reconnects automatically.
+
+2. **Save an SSH server** (2) - choose *Add*, and fill in name, host, port and user. Pick an
+   SSH key from the list of keys on the SD card, or choose password login.
+
+3. **Connect** (2) - choose *Connect* and pick the server. Or type `profile connect <name>`.
 
 4. **Use the shell** - once connected, anything you type is sent to the server:
    ```
@@ -206,12 +232,60 @@ and pressing Enter. You can also **roll the trackball** to cycle through the num
    vim myfile.txt
    ```
 
-5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH;
-   `disconnect` turns WiFi off.
+5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH and
+   return to the menu; `disconnect` turns WiFi off.
+
+6. **ChatGPT** (3) - add your OpenAI API key once, then chat by typing or by voice
+   (see [ChatGPT](#chatgpt)).
+
+**The screen**: the whole display is text - a one-line status bar at the top (battery, WiFi,
+SSH), the terminal, and the input line at the bottom. **Drag up/down on the screen to scroll
+back**; the newest ~4 KB of output is kept. Swipe left for the special keys panel.
 
 From then on the device **connects to the strongest saved WiFi network in range by itself**
 every time it starts, and reconnects if WiFi drops. No SD card is needed - everything is
 saved on the device. Then just type `profile` and pick a server.
+
+## ChatGPT
+
+Chat with an OpenAI model over WiFi: home menu → **3) ChatGPT**, or type `chat`.
+
+```
+== ChatGPT ==
+Model: gpt-4o-mini | Key: saved | Spoken replies: off
+ 1) Chat
+ 2) API key
+ 3) Model
+ 4) Spoken replies: turn on
+ 5) New chat (clear)
+ 0) Back
+```
+
+**First time**: *Chat* asks for your API key (from platform.openai.com → API keys):
+*Type it*, or - easier on the T-Deck keyboard - put the key alone in a file named
+`openai.key` at the top of the SD card and choose *Load from SD card*. The key is saved
+encrypted on the device (PIN-protected if you've set a PIN), and you're offered to delete the
+file from the card.
+
+**Chatting**: your messages appear on the right, replies on the left as they're written; the
+input line stays at the bottom. There is one chat session; it's kept until you clear it or
+restart. Type these words alone as commands:
+
+| Type | What it does |
+|---|---|
+| `clear` | Start a new chat |
+| `settings` | Model, API key, spoken replies |
+| `exit` or `menu` | Back to the home menu (the chat is kept) |
+
+**Voice**: **hold the trackball** and speak; the input line shows `* Recording 3s - release to
+send`. Let go to send: the T-Deck microphone recording (up to 30 s) is transcribed by OpenAI
+Whisper and sent to the model. Turn on *Spoken replies* to hear answers through the speaker.
+
+**Model**: gpt-4o-mini (default, fast and low cost), gpt-4.1-mini, gpt-4.1-nano, gpt-4o, or type
+any other model name. Replies are kept short and plain for the small screen.
+
+> **Privacy**: messages and voice recordings are sent to OpenAI (api.openai.com, HTTPS with
+> certificate verification) only while you use ChatGPT, and billed to your API key.
 
 ## WiFi Wizard
 
@@ -416,6 +490,8 @@ These run on the device (they are not sent to the SSH server):
 
 | Command | What it does |
 |---|---|
+| `menu` | Home menu (1-5 work as shortcuts anytime) |
+| `chat` | ChatGPT (see [ChatGPT](#chatgpt)) |
 | `wifi` / `connect` | WiFi wizard (see [WiFi Wizard](#wifi-wizard)) |
 | `connect <SSID> <PASS>` | Connect to WiFi directly (quotes for spaces) |
 | `disconnect` | Turn WiFi off |
@@ -425,7 +501,7 @@ These run on the device (they are not sent to the SSH server):
 | `vault` | Saved passwords and the optional PIN (see [above](#saved-passwords)) |
 | `hosts` | Trusted server keys (see [Server Keys](#server-keys-known-hosts)) |
 | `storage` | What is saved; SD card backup/restore; load keys (see [Storage](#storage-and-backups)) |
-| `exit` | Close the SSH session |
+| `exit` | Close the SSH session and return to the menu |
 | `clear` | Clear the screen |
 | `help` | Show the command list |
 

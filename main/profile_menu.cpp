@@ -70,6 +70,7 @@ bool SSHTerminal::wizard_input_masked() const
         case WizardStep::VaultOldPin:
         case WizardStep::VaultNewPin:
         case WizardStep::VaultConfirmPin:
+        case WizardStep::ChatKey:
             return true;
         default:
             return false;
@@ -94,7 +95,7 @@ void SSHTerminal::wizard_goto(WizardStep step)
 void SSHTerminal::wizard_prompt()
 {
     if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt() || host_step_prompt() ||
-        storage_step_prompt()) {
+        storage_step_prompt() || home_step_prompt() || chat_step_prompt()) {
         return;
     }
 }
@@ -112,13 +113,14 @@ void SSHTerminal::wizard_handle_input(const std::string& raw_input)
         if (wizard.step == WizardStep::HostTrust) {
             ssh_teardown();  // Close the half-open connection waiting for trust
         }
-        wizard_reset();
+        go_home();
         return;
     }
 
     if (profile_step_input(raw_input, input) || wifi_step_input(raw_input, input) ||
         vault_step_input(raw_input, input) || host_step_input(raw_input, input) ||
-        storage_step_input(raw_input, input)) {
+        storage_step_input(raw_input, input) || home_step_input(raw_input, input) ||
+        chat_step_input(raw_input, input)) {
         return;
     }
 }
@@ -145,7 +147,7 @@ void SSHTerminal::wizard_cycle_choice(int direction)
     update_input_display();
 }
 
-// Finish the current action: back to the menu it was started from, or exit
+// Finish the current action: back to the menu it was started from, or home
 void SSHTerminal::wizard_done()
 {
     WizardStep menu = wizard.menu;
@@ -153,6 +155,8 @@ void SSHTerminal::wizard_done()
     if (menu != WizardStep::None) {
         wizard.menu = menu;
         wizard_goto(menu);
+    } else {
+        go_home();
     }
 }
 
@@ -337,7 +341,7 @@ bool SSHTerminal::profile_step_prompt()
                         " 3) Add\n"
                         " 4) Edit\n"
                         " 5) Delete\n"
-                        " 0) Exit menu\n");
+                        " 0) Back\n");
             text = "Select [0-5]: ";
             wizard.choices = numbered_choices(5, true);
             break;
@@ -461,7 +465,7 @@ bool SSHTerminal::profile_step_input(const std::string& raw_input, const std::st
             } else if (input == "5") {
                 begin_profile_action(WizardAction::Delete, "");
             } else if (input == "0") {
-                wizard_reset();
+                go_home();
             } else {
                 append_text("Invalid choice.\n");
                 wizard_prompt();

@@ -90,6 +90,7 @@ SSHTerminal::SSHTerminal()
     if (vault_was_reset) {
         clear_all_saved_secret_flags();  // Those passwords are gone; ask for them again
     }
+    chat_load_settings();
 }
 
 SSHTerminal::~SSHTerminal() 
@@ -365,29 +366,46 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_style_bg_opa(terminal_screen, LV_OPA_COVER, 0);
     lv_obj_clear_flag(terminal_screen, LV_OBJ_FLAG_SCROLLABLE);
 
+    // Full-screen terminal: one thin status line, text area, one input line
+    const int32_t status_h = 13;
+    const int32_t input_h = 16;
+    const int32_t screen_w = lv_display_get_horizontal_resolution(NULL);
+    const int32_t screen_h = lv_display_get_vertical_resolution(NULL);
+
     status_bar = lv_label_create(terminal_screen);
-    lv_label_set_text(status_bar, "Status: Disconnected");
+    lv_label_set_text(status_bar, "");
     lv_obj_set_style_text_color(status_bar, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(status_bar, &lv_font_montserrat_12, 0);
-    lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 5, 5);
+    lv_obj_set_style_text_font(status_bar, &lv_font_montserrat_10, 0);
+    lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 2, 1);
     
     byte_counter_label = lv_label_create(terminal_screen);
-    lv_label_set_text(byte_counter_label, "0 B");
+    lv_label_set_text(byte_counter_label, "");
     lv_obj_set_style_text_color(byte_counter_label, lv_color_hex(0x00FFFF), 0);
-    lv_obj_set_style_text_font(byte_counter_label, &lv_font_montserrat_12, 0);
-    lv_obj_align(byte_counter_label, LV_ALIGN_TOP_RIGHT, -5, 5);
+    lv_obj_set_style_text_font(byte_counter_label, &lv_font_montserrat_10, 0);
+    lv_obj_align(byte_counter_label, LV_ALIGN_TOP_RIGHT, -2, 1);
 
     terminal_output = lv_textarea_create(terminal_screen);
-    lv_obj_set_size(terminal_output, lv_pct(100), lv_pct(75));
-    lv_obj_align(terminal_output, LV_ALIGN_TOP_MID, 0, 25);
+    lv_obj_set_size(terminal_output, screen_w, screen_h - status_h - input_h);
+    lv_obj_align(terminal_output, LV_ALIGN_TOP_LEFT, 0, status_h);
     lv_obj_set_style_bg_color(terminal_output, lv_color_black(), 0);
     lv_obj_set_style_text_color(terminal_output, lv_color_hex(0x00FF00), 0);
     lv_obj_set_style_text_font(terminal_output, &lv_font_montserrat_10, 0);
-    lv_obj_set_style_border_color(terminal_output, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_border_width(terminal_output, 2, 0);
+    lv_obj_set_style_border_width(terminal_output, 0, 0);
+    lv_obj_set_style_radius(terminal_output, 0, 0);
+    lv_obj_set_style_pad_all(terminal_output, 0, 0);
+    lv_obj_set_style_pad_hor(terminal_output, 2, 0);
     lv_textarea_set_cursor_click_pos(terminal_output, false);
     lv_textarea_set_one_line(terminal_output, false);
-    lv_obj_set_scrollbar_mode(terminal_output, LV_SCROLLBAR_MODE_OFF);
+    // Drag to scroll back; a thin bar shows only while scrolling
+    lv_obj_set_scrollbar_mode(terminal_output, LV_SCROLLBAR_MODE_ACTIVE);
+    lv_obj_set_style_width(terminal_output, 2, LV_PART_SCROLLBAR);
+
+    // Tell SSH servers the real screen size so output wraps to fit
+    const lv_font_t* font = &lv_font_montserrat_10;
+    int32_t char_w = lv_font_get_glyph_width(font, '0', 0);
+    int32_t line_h = lv_font_get_line_height(font);
+    pty_cols = char_w > 0 ? (screen_w - 4) / char_w : 80;
+    pty_rows = line_h > 0 ? (screen_h - status_h - input_h) / line_h : 24;
     
     lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_CLICK_FOCUSABLE);
     lv_obj_set_style_anim_time(terminal_output, 0, LV_PART_CURSOR);
@@ -399,13 +417,14 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
     lv_obj_t* input_container = lv_obj_create(terminal_screen);
-    lv_obj_set_size(input_container, lv_pct(100) - 10, 25);
+    lv_obj_set_size(input_container, screen_w - 4, input_h);
     lv_obj_set_style_bg_opa(input_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(input_container, 0, 0);
+    lv_obj_set_style_radius(input_container, 0, 0);
     lv_obj_set_style_pad_all(input_container, 0, 0);
     lv_obj_set_scrollbar_mode(input_container, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(input_container, LV_DIR_HOR);
-    lv_obj_align(input_container, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    lv_obj_align(input_container, LV_ALIGN_BOTTOM_LEFT, 2, 0);
     
     input_label = lv_label_create(input_container);
     lv_label_set_text(input_label, "> ");
@@ -429,66 +448,39 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     
     history_save_timer = lv_timer_create(history_save_cb, 5000, this);
 
-    const char* logo = 
-        "\n"
-        "  ================================================\n"
-        "           POCKET SSH TERM - ESP32-S3\n"
-        "  ================================================\n"
-        "\n"
-        "  Commands:\n"
-        "   wifi    - WiFi menu (scan, pick, save)\n"
-        "   profile - Saved SSH connections menu\n"
-        "   vault   - Master PIN for saved passwords\n"
-        "   storage - Back up / restore settings (SD)\n"
-        "   disconnect - WiFi off | exit - SSH off\n"
-        "   clear - Clear screen | help - All commands\n"
-        "\n"
-        "  Ready. Type 'wifi' to start...\n\n";
-    
-    lv_textarea_set_text(terminal_output, logo);
+    lv_textarea_set_text(terminal_output, "");
 
     return terminal_screen;
 }
 
+// Scrollback: when full, the oldest lines are dropped (never the new text)
 void SSHTerminal::append_text(const char* text)
 {
-    if (!terminal_output || !text) {
+    static const size_t SCROLLBACK_MAX = 6144;
+    static const size_t SCROLLBACK_KEEP = 4096;
+    if (!terminal_output || !text || !*text) {
         return;
     }
-    
-    int64_t start_time = esp_timer_get_time() / 1000;
-    
-    const char* current_text = lv_textarea_get_text(terminal_output);
-    size_t current_len = current_text ? strlen(current_text) : 0;
-    size_t new_len = strlen(text);
-    
-    const size_t MAX_BUFFER_SIZE = 4096;
-    
-    if (current_len > MAX_BUFFER_SIZE * 0.8) {
-        lv_textarea_set_text(terminal_output, "...[cleared]\n");
-        current_len = 14;
-        
-        int64_t elapsed = (esp_timer_get_time() / 1000) - start_time;
-        if (elapsed > 500) {
-            ESP_LOGW(TAG, "Text clear took %lld ms, skipping append", elapsed);
-            return;
-        }
+    const char* current = lv_textarea_get_text(terminal_output);
+    size_t current_len = strlen(current);
+    size_t add_len = strlen(text);
+    if (add_len > SCROLLBACK_KEEP) {
+        text += add_len - SCROLLBACK_KEEP;
+        add_len = SCROLLBACK_KEEP;
     }
-    
-    const size_t MAX_CHUNK = 256;
-    if (new_len > MAX_CHUNK) {
-        text = text + (new_len - MAX_CHUNK);
-        new_len = MAX_CHUNK;
-    }
-    
-    if (current_len + new_len < MAX_BUFFER_SIZE) {
+    if (current_len + add_len <= SCROLLBACK_MAX) {
         lv_textarea_add_text(terminal_output, text);
+        return;
     }
-    
-    int64_t total_time = (esp_timer_get_time() / 1000) - start_time;
-    if (total_time > 1000) {
-        ESP_LOGW(TAG, "append_text took %lld ms - LVGL heap may be fragmented", total_time);
+    size_t keep = SCROLLBACK_KEEP - add_len;
+    const char* tail = current + (current_len > keep ? current_len - keep : 0);
+    const char* line_start = strchr(tail, '\n');
+    if (line_start && keep > 0) {
+        tail = line_start + 1;
     }
+    std::string kept(tail);
+    kept += text;
+    lv_textarea_set_text(terminal_output, kept.c_str());
 }
 
 void SSHTerminal::clear_terminal()
@@ -539,6 +531,210 @@ static std::string redact_secrets(const std::string& cmd, bool* has_secret)
     return cmd;
 }
 
+// Runs a command typed on the input line (or at the home menu)
+void SSHTerminal::execute_command(const std::string& cmd)
+{
+    // Home menu numbers work any time the menu isn't on screen (and no SSH session is open)
+    if (!ssh_connected && cmd.size() == 1 && cmd[0] >= '1' && cmd[0] <= '5') {
+        wizard_reset();
+        wizard.menu = WizardStep::HomeMenu;
+        wizard.step = WizardStep::HomeMenu;
+        home_step_input(cmd, cmd);
+        return;
+    }
+    if (cmd == "connect" || cmd == "wifi" || cmd.rfind("wifi ", 0) == 0) {
+        handle_wifi_command(cmd == "connect" ? "wifi scan" : cmd);
+    }
+    else if (cmd == "vault" || cmd.rfind("vault ", 0) == 0) {
+        handle_vault_command(cmd);
+    }
+    else if (cmd == "hosts" || cmd.rfind("hosts ", 0) == 0) {
+        handle_hosts_command(cmd);
+    }
+    else if (cmd == "storage" || cmd.rfind("storage ", 0) == 0) {
+        handle_storage_command(cmd);
+    }
+    else if (cmd.rfind("connect ", 0) == 0) {
+        // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
+        std::vector<std::string> args;
+        std::string arg;
+        bool in_quotes = false;
+        
+        // Skip "connect " prefix
+        for (size_t i = 8; i < cmd.length(); i++) {
+            char c = cmd[i];
+            
+            if (c == '"') {
+                in_quotes = !in_quotes;
+            } else if (c == ' ' && !in_quotes) {
+                if (!arg.empty()) {
+                    args.push_back(arg);
+                    arg.clear();
+                }
+            } else {
+                arg += c;
+            }
+        }
+        if (!arg.empty()) {
+            args.push_back(arg);
+        }
+        
+        if (args.size() >= 2) {
+            std::string ssid = args[0];
+            std::string password = args[1];
+            
+            append_text("Connecting to WiFi: ");
+            append_text(ssid.c_str());
+            append_text("\n");
+            
+            if (init_wifi(ssid.c_str(), password.c_str()) == ESP_OK) {
+                append_text("WiFi connected successfully!\n");
+                wifi_remember_network(ssid, password, false);
+            } else {
+                append_text("WiFi connection failed!\n");
+            }
+            vault::wipe(password);
+        } else {
+            append_text("Usage: connect <SSID> <PASSWORD>\n");
+            append_text("  Use quotes for SSIDs/passwords with spaces: connect \"My WiFi\" password\n");
+        }
+        for (auto& a : args) {
+            vault::wipe(a);
+        }
+        vault::wipe(arg);
+    }
+    else if (cmd.rfind("ssh ", 0) == 0) {
+        std::vector<std::string> parts;
+        size_t pos = 0;
+        std::string temp = cmd;
+        
+        while ((pos = temp.find(' ')) != std::string::npos) {
+            parts.push_back(temp.substr(0, pos));
+            temp.erase(0, pos + 1);
+        }
+        parts.push_back(temp);
+        
+        if (parts.size() >= 5) {
+            std::string host = parts[1];
+            int port = std::atoi(parts[2].c_str());
+            std::string user = parts[3];
+            std::string pass = parts[4];
+            
+            connect(host.c_str(), port, user.c_str(), pass.c_str());
+            vault::wipe(pass);
+        } else {
+            append_text("Usage: ssh <HOST> <PORT> <USER> <PASS>\n");
+        }
+        for (auto& part : parts) {
+            vault::wipe(part);
+        }
+        vault::wipe(temp);
+    }
+    else if (cmd.rfind("sshkey ", 0) == 0) {
+        std::vector<std::string> parts;
+        size_t pos = 0;
+        std::string temp = cmd;
+        
+        while ((pos = temp.find(' ')) != std::string::npos) {
+            parts.push_back(temp.substr(0, pos));
+            temp.erase(0, pos + 1);
+        }
+        parts.push_back(temp);
+        
+        if (parts.size() >= 5) {
+            std::string host = parts[1];
+            int port = std::atoi(parts[2].c_str());
+            std::string user = parts[3];
+            std::string keyfile = parts[4];
+            std::string passphrase = parts.size() >= 6 ? parts[5] : "";
+            
+            // Try to load key from memory
+            size_t key_len = 0;
+            const char* key_data = get_loaded_key(keyfile.c_str(), &key_len);
+            
+            if (key_data && key_len > 0 && key_is_encrypted(keyfile) && passphrase.empty()) {
+                append_text("Key is passphrase-protected:\n");
+                append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> <PASSPHRASE>\n");
+                append_text("  or save it in a profile: profile add\n");
+            } else if (key_data && key_len > 0) {
+                append_text("Using key file: ");
+                append_text(keyfile.c_str());
+                append_text("\n");
+                connect_with_key(host.c_str(), port, user.c_str(), key_data, key_len,
+                                 passphrase.empty() ? NULL : passphrase.c_str());
+            } else {
+                append_text("ERROR: Key file not found: ");
+                append_text(keyfile.c_str());
+                append_text("\n");
+                append_text("Available keys: ");
+                for (const auto& kv : loaded_keys) {
+                    append_text(kv.first.c_str());
+                    append_text(" ");
+                }
+                append_text("\n");
+            }
+            vault::wipe(passphrase);
+        } else {
+            append_text("Usage: sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]\n");
+            append_text("  Example: sshkey 192.168.1.100 22 pi default.pem\n");
+        }
+        for (auto& part : parts) {
+            vault::wipe(part);
+        }
+        vault::wipe(temp);
+    }
+    else if (cmd == "profile" || cmd == "profiles" ||
+             cmd.rfind("profile ", 0) == 0 || cmd.rfind("profiles ", 0) == 0) {
+        handle_profile_command(cmd);
+    }
+    else if (cmd == "disconnect") {
+        disconnect_wifi();
+    }
+    else if (cmd == "exit" || cmd == "menu" || cmd == "home") {
+        if (cmd == "exit" && (session || ssh_socket >= 0)) {
+            disconnect();
+        } else if (ssh_connected) {
+            append_text("SSH is connected - type 'exit' to close it first.\n");
+            return;
+        }
+        go_home();
+    }
+    else if (cmd == "chat" || cmd == "chatgpt" || cmd == "chat settings") {
+        handle_chat_command(cmd);
+    }
+    else if (cmd == "clear") {
+        clear_terminal();
+    }
+    else if (cmd == "help") {
+        append_text("Available commands:\n");
+        append_text("  menu - Home menu (also 'exit' when not connected)\n");
+        append_text("  chat - ChatGPT (hold the trackball to talk)\n");
+        append_text("  wifi - WiFi menu: scan, pick a network, save it\n");
+        append_text("  wifi scan|saved|list|forget|off\n");
+        append_text("  connect - Scan and pick a WiFi network\n");
+        append_text("  connect <SSID> <PASSWORD> - Connect to WiFi\n");
+        append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
+        append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
+        append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE] - SSH with key\n");
+        append_text("    Note: Place .pem keys in /sdcard/ssh_keys/ before use\n");
+        append_text("  profile - Saved connection profiles menu\n");
+        append_text("  profile list|add - List or create profiles\n");
+        append_text("  profile connect|edit|delete [NAME|#]\n");
+        append_text("  vault - PIN status | vault lock|unlock|pin|reset\n");
+        append_text("  hosts - Trusted server keys | hosts forget [HOST|#]\n");
+        append_text("  storage - Saved settings: SD backup/restore, load keys\n");
+        append_text("  disconnect - Disconnect WiFi\n");
+        append_text("  exit - Disconnect SSH\n");
+        append_text("  clear - Clear terminal\n");
+        append_text("  help - Show this help\n");
+    }
+    else if (ssh_connected) {
+        send_command(cmd.c_str());
+    } else {
+        append_text("Unknown command. Type 'menu' for the menu or 'help' for commands.\n");
+    }
+}
+
 void SSHTerminal::handle_key_input(char key)
 {
     last_input_ms = esp_timer_get_time() / 1000;
@@ -557,7 +753,12 @@ void SSHTerminal::handle_key_input(char key)
         if (wizard.step == WizardStep::HostTrust) {
             ssh_teardown();
         }
-        wizard_reset();
+        go_home();
+    } else if (chat_active && (key == '\n' || key == '\r')) {
+        std::string text = current_input;
+        vault::wipe(current_input);
+        cursor_pos = 0;
+        chat_submit(text);
     } else if (key == '\n' || key == '\r') {
         if (!current_input.empty()) {
             bool has_secret = false;
@@ -566,191 +767,8 @@ void SSHTerminal::handle_key_input(char key)
             append_text(shown.c_str());
             append_text("\n");
             
-            if (current_input == "connect" || current_input == "wifi" || current_input.rfind("wifi ", 0) == 0) {
-                handle_wifi_command(current_input == "connect" ? "wifi scan" : current_input);
-            }
-            else if (current_input == "vault" || current_input.rfind("vault ", 0) == 0) {
-                handle_vault_command(current_input);
-            }
-            else if (current_input == "hosts" || current_input.rfind("hosts ", 0) == 0) {
-                handle_hosts_command(current_input);
-            }
-            else if (current_input == "storage" || current_input.rfind("storage ", 0) == 0) {
-                handle_storage_command(current_input);
-            }
-            else if (current_input.rfind("connect ", 0) == 0) {
-                // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
-                std::vector<std::string> args;
-                std::string arg;
-                bool in_quotes = false;
-                
-                // Skip "connect " prefix
-                for (size_t i = 8; i < current_input.length(); i++) {
-                    char c = current_input[i];
-                    
-                    if (c == '"') {
-                        in_quotes = !in_quotes;
-                    } else if (c == ' ' && !in_quotes) {
-                        if (!arg.empty()) {
-                            args.push_back(arg);
-                            arg.clear();
-                        }
-                    } else {
-                        arg += c;
-                    }
-                }
-                if (!arg.empty()) {
-                    args.push_back(arg);
-                }
-                
-                if (args.size() >= 2) {
-                    std::string ssid = args[0];
-                    std::string password = args[1];
-                    
-                    append_text("Connecting to WiFi: ");
-                    append_text(ssid.c_str());
-                    append_text("\n");
-                    
-                    if (init_wifi(ssid.c_str(), password.c_str()) == ESP_OK) {
-                        append_text("WiFi connected successfully!\n");
-                        wifi_remember_network(ssid, password, false);
-                    } else {
-                        append_text("WiFi connection failed!\n");
-                    }
-                    vault::wipe(password);
-                } else {
-                    append_text("Usage: connect <SSID> <PASSWORD>\n");
-                    append_text("  Use quotes for SSIDs/passwords with spaces: connect \"My WiFi\" password\n");
-                }
-                for (auto& a : args) {
-                    vault::wipe(a);
-                }
-                vault::wipe(arg);
-            }
-            else if (current_input.rfind("ssh ", 0) == 0) {
-                std::vector<std::string> parts;
-                size_t pos = 0;
-                std::string temp = current_input;
-                
-                while ((pos = temp.find(' ')) != std::string::npos) {
-                    parts.push_back(temp.substr(0, pos));
-                    temp.erase(0, pos + 1);
-                }
-                parts.push_back(temp);
-                
-                if (parts.size() >= 5) {
-                    std::string host = parts[1];
-                    int port = std::atoi(parts[2].c_str());
-                    std::string user = parts[3];
-                    std::string pass = parts[4];
-                    
-                    connect(host.c_str(), port, user.c_str(), pass.c_str());
-                    vault::wipe(pass);
-                } else {
-                    append_text("Usage: ssh <HOST> <PORT> <USER> <PASS>\n");
-                }
-                for (auto& part : parts) {
-                    vault::wipe(part);
-                }
-                vault::wipe(temp);
-            }
-            else if (current_input.rfind("sshkey ", 0) == 0) {
-                std::vector<std::string> parts;
-                size_t pos = 0;
-                std::string temp = current_input;
-                
-                while ((pos = temp.find(' ')) != std::string::npos) {
-                    parts.push_back(temp.substr(0, pos));
-                    temp.erase(0, pos + 1);
-                }
-                parts.push_back(temp);
-                
-                if (parts.size() >= 5) {
-                    std::string host = parts[1];
-                    int port = std::atoi(parts[2].c_str());
-                    std::string user = parts[3];
-                    std::string keyfile = parts[4];
-                    std::string passphrase = parts.size() >= 6 ? parts[5] : "";
-                    
-                    // Try to load key from memory
-                    size_t key_len = 0;
-                    const char* key_data = get_loaded_key(keyfile.c_str(), &key_len);
-                    
-                    if (key_data && key_len > 0 && key_is_encrypted(keyfile) && passphrase.empty()) {
-                        append_text("Key is passphrase-protected:\n");
-                        append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> <PASSPHRASE>\n");
-                        append_text("  or save it in a profile: profile add\n");
-                    } else if (key_data && key_len > 0) {
-                        append_text("Using key file: ");
-                        append_text(keyfile.c_str());
-                        append_text("\n");
-                        connect_with_key(host.c_str(), port, user.c_str(), key_data, key_len,
-                                         passphrase.empty() ? NULL : passphrase.c_str());
-                    } else {
-                        append_text("ERROR: Key file not found: ");
-                        append_text(keyfile.c_str());
-                        append_text("\n");
-                        append_text("Available keys: ");
-                        for (const auto& kv : loaded_keys) {
-                            append_text(kv.first.c_str());
-                            append_text(" ");
-                        }
-                        append_text("\n");
-                    }
-                    vault::wipe(passphrase);
-                } else {
-                    append_text("Usage: sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]\n");
-                    append_text("  Example: sshkey 192.168.1.100 22 pi default.pem\n");
-                }
-                for (auto& part : parts) {
-                    vault::wipe(part);
-                }
-                vault::wipe(temp);
-            }
-            else if (current_input == "profile" || current_input == "profiles" ||
-                     current_input.rfind("profile ", 0) == 0 || current_input.rfind("profiles ", 0) == 0) {
-                handle_profile_command(current_input);
-            }
-            else if (current_input == "disconnect") {
-                disconnect_wifi();
-            }
-            else if (current_input == "exit") {
-                if (session || ssh_socket >= 0) {
-                    disconnect();
-                } else {
-                    append_text("SSH not connected\n");
-                }
-            }
-            else if (current_input == "clear") {
-                clear_terminal();
-            }
-            else if (current_input == "help") {
-                append_text("Available commands:\n");
-                append_text("  wifi - WiFi menu: scan, pick a network, save it\n");
-                append_text("  wifi scan|saved|list|forget|off\n");
-                append_text("  connect - Scan and pick a WiFi network\n");
-                append_text("  connect <SSID> <PASSWORD> - Connect to WiFi\n");
-                append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");
-                append_text("  ssh <HOST> <PORT> <USER> <PASS> - Connect via SSH\n");
-                append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE] - SSH with key\n");
-                append_text("    Note: Place .pem keys in /sdcard/ssh_keys/ before use\n");
-                append_text("  profile - Saved connection profiles menu\n");
-                append_text("  profile list|add - List or create profiles\n");
-                append_text("  profile connect|edit|delete [NAME|#]\n");
-                append_text("  vault - PIN status | vault lock|unlock|pin|reset\n");
-                append_text("  hosts - Trusted server keys | hosts forget [HOST|#]\n");
-                append_text("  storage - Saved settings: SD backup/restore, load keys\n");
-                append_text("  disconnect - Disconnect WiFi\n");
-                append_text("  exit - Disconnect SSH\n");
-                append_text("  clear - Clear terminal\n");
-                append_text("  help - Show this help\n");
-            }
-            else if (ssh_connected) {
-                send_command(current_input.c_str());
-            } else {
-                append_text("Unknown command. Type 'help' for commands.\n");
-            }
-            
+            execute_command(current_input);
+
             // Commands carrying a password stay out of history (it is stored in NVS)
             if (!has_secret) {
                 auto it = std::find(command_history.begin(), command_history.end(), current_input);
@@ -790,6 +808,10 @@ void SSHTerminal::update_input_display()
         cursor_pos = current_input.length();
     }
     
+    if (!input_banner.empty()) {
+        lv_label_set_text(input_label, input_banner.c_str());
+        return;
+    }
     std::string full_text = "> " + input_display_text();
     
     // Insert cursor at correct position
@@ -1397,7 +1419,8 @@ esp_err_t SSHTerminal::ssh_open_channel()
     }
 
     waits = 0;
-    while ((rc = libssh2_channel_request_pty(channel, "vt100")) == LIBSSH2_ERROR_EAGAIN &&
+    while ((rc = libssh2_channel_request_pty_ex(channel, "vt100", 5, NULL, 0, pty_cols, pty_rows, 0, 0)) ==
+               LIBSSH2_ERROR_EAGAIN &&
            (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
     if (rc) {
@@ -1533,6 +1556,7 @@ void SSHTerminal::ssh_receive_task(void* param)
 
     if (closed_by_server && generation == terminal->ssh_generation) {
         terminal->disconnect();
+        terminal->home_pending = true;
     }
     vTaskDelete(NULL);
 }
@@ -1761,12 +1785,17 @@ void SSHTerminal::send_special_key(const char* sequence)
     
     if (strcmp(sequence, "EXIT") == 0) {
         disconnect();
+        home_pending = true;
         toggle_side_panel();
         return;
     }
     
     if (strcmp(sequence, "CLEAR") == 0) {
-        clear_terminal();
+        if (chat_active) {
+            chat_clear();
+        } else {
+            clear_terminal();
+        }
         toggle_side_panel();
         return;
     }

@@ -166,7 +166,7 @@ bool SSHTerminal::storage_step_prompt()
                         " 2) Restore from SD card to this device\n"
                         " 3) Load SSH keys from SD card\n"
                         " 4) Erase all settings on this device\n"
-                        " 0) Exit menu\n"
+                        " 0) Back\n"
                         "Select [0-4]: ");
             wizard.choices = {"1", "2", "3", "4", "0"};
             return true;
@@ -203,7 +203,7 @@ bool SSHTerminal::storage_step_input(const std::string& raw_input, const std::st
             } else if (input == "4") {
                 wizard_goto(WizardStep::StorageConfirmErase);
             } else if (input == "0") {
-                wizard_reset();
+                go_home();
             } else {
                 append_text("Invalid choice.\n");
                 wizard_prompt();

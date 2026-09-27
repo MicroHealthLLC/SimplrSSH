@@ -35,3 +35,16 @@ CONFIG_SPIRAM_MEMTEST=n
 CONFIG_ESP_WIFI_NVS_ENABLED=n
 # Long file names on the SD card (key files like backup_server.pem, backup folder)
 CONFIG_FATFS_LFN_HEAP=y
+
+# --- Audio (ChatGPT voice) --------------------------------------------------
+# The T-Deck's microphone codec is an ES7210; don't build the other codec drivers
+CONFIG_CODEC_ES7210_SUPPORT=y
+CONFIG_CODEC_ES8311_SUPPORT=n
+CONFIG_CODEC_ES7243_SUPPORT=n
+CONFIG_CODEC_ES7243E_SUPPORT=n
+CONFIG_CODEC_ES8156_SUPPORT=n
+CONFIG_CODEC_AW88298_SUPPORT=n
+CONFIG_CODEC_ES8389_SUPPORT=n
+CONFIG_CODEC_ES8374_SUPPORT=n
+CONFIG_CODEC_ES8388_SUPPORT=n
+CONFIG_CODEC_TAS5805M_SUPPORT=n

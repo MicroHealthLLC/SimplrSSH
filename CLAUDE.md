@@ -1,17 +1,21 @@
 # PocketSSH - rules for AI assistants and contributors
 
 PocketSSH is firmware for the **LilyGO T-Deck / T-Deck Plus** (ESP32-S3, 240 MHz dual core,
-~340 KB usable internal RAM, 8 MB PSRAM, 16 MB flash). It does one job: **configure WiFi and
-SSH into servers, with common terminal-client features**, on a 320x240 screen with a small
-keyboard and trackball. Every change should serve that job.
+~340 KB usable internal RAM, 8 MB PSRAM, 16 MB flash). Its job: **configure WiFi, SSH into
+servers with common terminal-client features, and chat with ChatGPT by text or voice**, on a
+320x240 screen with a small keyboard and trackball. Every change should serve that job.
+
+UI model: a home menu (numbered, `menu` anywhere, `exit` back to it), each app a numbered
+menu of short prompts; the screen is edge-to-edge text (no borders or decoration).
 
 ## Scope: keep it lean
 
 - If a feature isn't needed to connect to WiFi, SSH into a server, or use the terminal
   comfortably on the T-Deck, don't add it. Remove code that nothing calls.
-- No telemetry, analytics, OTA, cloud services, web servers, access-point mode, Bluetooth,
-  or background network traffic. The only outbound connections allowed are: the WiFi network
-  the user picks, DNS for the host the user typed, and that SSH server.
+- No telemetry, analytics, OTA, web servers, access-point mode, Bluetooth, or background
+  network traffic. The only outbound connections allowed are: the WiFi network the user
+  picks, DNS for the host the user typed, that SSH server, and api.openai.com - only while
+  the user is using ChatGPT, with their own API key, over verified TLS (CA bundle).
 - Prefer ESP-IDF / LVGL / libssh2 facilities over new dependencies. New components must be
   pinned (`main/idf_component.yml` + `dependencies.lock`) and reviewed for network use.
 
@@ -22,7 +26,11 @@ keyboard and trackball. Every change should serve that job.
 - Large or long-lived buffers belong in PSRAM (`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, or
   let the heap place allocations >16 KB there). Internal RAM is for stacks, DMA and small objects.
 - No large arrays on task stacks. Stacks: keypad 8 KB (runs all terminal work), SSH receive
-  8 KB, trackball 2 KB (only queues events). Don't add tasks; queue work to `keypad_task`.
+  8 KB, trackball 2 KB (only queues events), ChatGPT worker 10 KB (created per request and
+  deleted when done). Don't add long-lived tasks.
+- Blocking network calls (OpenAI) never run in the UI task; workers touch LVGL only under
+  `bsp_display_lock()` and check `chat_generation` so a closed view is never used.
+- Audio (I2S mic/speaker) is started only while used; recordings go to PSRAM.
 - Bound every collection that grows from user or network input (history 100, profiles 20,
   networks 10, SD keys 8 / 48 KB, terminal text ~4 KB).
 - Avoid heap churn in hot paths (SSH receive/render loop): reuse buffers, don't build
@@ -93,6 +101,8 @@ keyboard and trackball. Every change should serve that job.
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
 | `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
 | `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |
+| `main/home_menu.cpp` | Home and Security menus, `go_home()` |
+| `main/chat_app.cpp`, `main/openai_client.cpp`, `main/audio.cpp` | ChatGPT app, OpenAI HTTPS client, mic/speaker |
 
 ## Workflow
 

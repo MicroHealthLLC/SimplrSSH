@@ -29,7 +29,7 @@
 
 static const char *TAG = "BACKUP";
 
-static const char* const NAMESPACES[] = {"profiles", "wifi_nets", "known_hosts", "storage", "vault"};
+static const char* const NAMESPACES[] = {"profiles", "wifi_nets", "known_hosts", "storage", "vault", "chat"};
 static const char* const HEADER = "POCKETSSH-BACKUP 1";
 static const size_t MAX_LINE = 8300;     // "ns key s " + hex of a 4000-byte string
 static const size_t MAX_RECORDS = 1000;

@@ -213,7 +213,7 @@ void SSHTerminal::wifi_connect_with(const std::string& password, bool from_vault
     if (!(from_vault && find_ssid(saved_networks, ssid) >= 0)) {
         wifi_remember_network(ssid, password, wizard.wifi_hidden);
     }
-    wizard_reset();
+    go_home();
 }
 
 // Saves a network that just connected, most recent first, so it reconnects after a restart
@@ -348,6 +348,9 @@ void SSHTerminal::run_startup_tasks()
 {
     wifi_next_retry_ms = esp_timer_get_time() / 1000 + 30000;
     wifi_auto_connect(false);
+    if (!wizard_active()) {  // Not waiting for a PIN
+        go_home();
+    }
 }
 
 // Reconnects saved WiFi in the background while it is down: 30 s, then backing off to 5 min.
@@ -381,7 +384,7 @@ bool SSHTerminal::wifi_step_prompt()
                         " 2) Connect to saved network\n"
                         " 3) Forget saved network\n"
                         " 4) Disconnect\n"
-                        " 0) Exit menu\n");
+                        " 0) Back\n");
             text = "Select [0-4]: ";
             wizard.choices = {"1", "2", "3", "4", "0"};
             break;
@@ -468,7 +471,7 @@ bool SSHTerminal::wifi_step_input(const std::string& raw_input, const std::strin
                 disconnect_wifi();
                 wizard_prompt();
             } else if (input == "0") {
-                wizard_reset();
+                go_home();
             } else {
                 append_text("Invalid choice.\n");
                 wizard_prompt();
