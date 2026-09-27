@@ -1,11 +1,14 @@
 # Builds the LilyGO T-Deck (ESP32-S3) firmware and packages it as a single merged
 # image, PocketSSH-v<version>-release.bin, to flash at offset 0x0 (DIO, 80 MHz, 16 MB).
 #
-# Releases: the version is PROJECT_VER in CMakeLists.txt. When a push to main carries a
-# version that has no "v<version>" tag yet, this workflow creates the tag and a GitHub
-# release with notes from README.md's Version History and the firmware image attached.
-# Pushing a "v<version>" tag, or running the workflow manually on main, does the same.
-# Other branches and pull requests only build.
+# Versions and releases (see .github/scripts/plan_release.py):
+#   - Every push to main publishes a release, auto-incrementing the patch number from
+#     the latest vX.Y.Z tag (v1.3.0 -> v1.3.1 -> v1.3.2 ...).
+#   - "Run workflow" (manual) lets you pick the branch (main or integration), the bump
+#     (patch by default, minor, major) or an exact version. Releases from integration
+#     are marked as pre-releases.
+#   - Pushing a tag vX.Y.Z releases exactly that version.
+#   - Pushes to other branches and pull requests only build ("<next>-dev.<sha>").
 name: Build firmware
 
 on:
@@ -14,6 +17,21 @@ on:
     tags: ['v*']
   pull_request:
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to build and release
+        type: choice
+        options: [main, integration]
+        default: main
+      bump:
+        description: Version bump (ignored if a version is given)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      version:
+        description: Exact version, e.g. 1.4.0 (optional - leave empty to auto-increment)
+        type: string
+        required: false
 
 env:
   ESP_IDF_VERSION: v5.5.1
@@ -23,46 +41,33 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Runs that can release (main, tags, manual) are serialized so two of them never pick
+    # the same version; other builds are grouped per branch / pull request
+    concurrency:
+      group: >-
+        build-${{ (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' ||
+        startsWith(github.ref, 'refs/tags/')) && 'release' || github.ref }}
+      cancel-in-progress: false
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      release: ${{ steps.release.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      release: ${{ steps.plan.outputs.release }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      sha: ${{ steps.plan.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.branch || '' }}
 
-      - name: Read firmware version
-        id: version
-        run: |
-          version=$(sed -n 's/^set(PROJECT_VER "\(.*\)").*/\1/p' CMakeLists.txt | tr -d '\r')
-          if [ -z "$version" ]; then echo "::error file=CMakeLists.txt::PROJECT_VER not found"; exit 1; fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Firmware version: $version"
-
-      - name: Decide whether to release
-        id: release
+      - name: Plan version and release
+        id: plan
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag="v$VERSION"
-          release=false
-          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
-            if [ "$GITHUB_REF_NAME" != "$tag" ]; then
-              echo "::error file=CMakeLists.txt::Tag $GITHUB_REF_NAME does not match PROJECT_VER $VERSION"
-              exit 1
-            fi
-            release=true
-          elif [ "$GITHUB_REF" = "refs/heads/main" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
-            if git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
-              echo "::notice file=CMakeLists.txt::$tag is already released. Bump PROJECT_VER and add a Version History entry to release again."
-            else
-              release=true
-            fi
-          fi
-          echo "release=$release" >> "$GITHUB_OUTPUT"
-          echo "Release $tag: $release"
-
-      - name: Check release notes exist
-        if: steps.release.outputs.release == 'true'
-        run: python3 .github/scripts/release_notes.py "${{ steps.version.outputs.version }}" check.bin 0 /dev/null > /dev/null
+          python3 .github/scripts/plan_release.py
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Pull ESP-IDF image (retries transient registry errors)
         run: |
@@ -78,20 +83,26 @@ jobs:
         with:
           esp_idf_version: v5.5.1@sha256:dfa2d076c796769c07c155eba6c672b9f395aec943b2ba3701b73379b5f9e884  # espressif/idf:v5.5.1 pinned by digest
           target: esp32s3
+          # The version shown on the device and in the image name
+          extra_docker_args: -e FIRMWARE_VERSION=${{ steps.plan.outputs.version }}
           # The action wraps this in bash -c '...', so it must not contain single quotes
           command: >-
             set -o pipefail &&
             idf.py build 2>&1 | tee build-output.log &&
-            idf.py merge-bin -o PocketSSH-v${{ steps.version.outputs.version }}-release.bin &&
+            idf.py merge-bin -o PocketSSH-v${{ steps.plan.outputs.version }}-release.bin &&
             cd build &&
-            sha256sum PocketSSH-v${{ steps.version.outputs.version }}-release.bin > PocketSSH-v${{ steps.version.outputs.version }}-release.bin.sha256
+            sha256sum PocketSSH-v${{ steps.plan.outputs.version }}-release.bin > PocketSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256
 
       - name: Summarize
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          RELEASE: ${{ steps.plan.outputs.release }}
+          PRERELEASE: ${{ steps.plan.outputs.prerelease }}
         run: |
-          bin=build/PocketSSH-v${{ steps.version.outputs.version }}-release.bin
+          bin="build/PocketSSH-v$VERSION-release.bin"
           size=$(stat -c %s "$bin")
           {
-            echo "## PocketSSH v${{ steps.version.outputs.version }}"
+            echo "## PocketSSH v$VERSION"
             echo ""
             echo "| File | Size | Flash at |"
             echo "|---|---|---|"
@@ -100,9 +111,12 @@ jobs:
             echo "SHA-256: \`$(cut -d' ' -f1 "$bin.sha256")\`"
             echo ""
             echo "Flash: \`esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 $(basename "$bin")\`"
-            if [ "${{ steps.release.outputs.release }}" = "true" ]; then
-              echo ""
-              echo "Releasing as **v${{ steps.version.outputs.version }}** (see the release job)."
+            echo ""
+            if [ "$RELEASE" = "true" ]; then
+              kind=$([ "$PRERELEASE" = "true" ] && echo "pre-release" || echo "release")
+              echo "Publishing **v$VERSION** as a $kind (see the release job)."
+            else
+              echo "Build only - no release for this event."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -114,10 +128,10 @@ jobs:
       - name: Upload firmware
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: PocketSSH-v${{ steps.version.outputs.version }}
+          name: PocketSSH-v${{ steps.plan.outputs.version }}
           path: |
-            build/PocketSSH-v${{ steps.version.outputs.version }}-release.bin
-            build/PocketSSH-v${{ steps.version.outputs.version }}-release.bin.sha256
+            build/PocketSSH-v${{ steps.plan.outputs.version }}-release.bin
+            build/PocketSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256
             build/PocketSSH.bin
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
@@ -135,41 +149,46 @@ jobs:
       cancel-in-progress: false
     env:
       VERSION: ${{ needs.build.outputs.version }}
+      TAG: ${{ needs.build.outputs.tag }}
       IMAGE: PocketSSH-v${{ needs.build.outputs.version }}-release.bin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+
+      - name: Refuse to overwrite an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::Release $TAG already exists. Re-run the workflow to release the next version."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" != "tag" ] && git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null; then
+            echo "::error::Tag $TAG already exists without a release. Delete it or release a different version."
+            exit 1
+          fi
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: PocketSSH-v${{ needs.build.outputs.version }}
           path: firmware
 
-      - name: Skip if already released
-        id: exists
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            echo "::notice::v$VERSION was released by another run; nothing to do."
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Write release notes
-        if: steps.exists.outputs.exists != 'true'
         run: |
           sha256=$(cut -d' ' -f1 "firmware/$IMAGE.sha256")
           python3 .github/scripts/release_notes.py "$VERSION" "$IMAGE" "$sha256" release-notes.md
 
-      - name: Publish release v${{ needs.build.outputs.version }}
-        if: steps.exists.outputs.exists != 'true'
+      - name: Publish ${{ needs.build.outputs.tag }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          target_commitish: ${{ github.sha }}
-          name: PocketSSH v${{ needs.build.outputs.version }}
+          tag_name: ${{ needs.build.outputs.tag }}
+          target_commitish: ${{ needs.build.outputs.sha }}
+          name: PocketSSH ${{ needs.build.outputs.tag }}
           body_path: release-notes.md
           generate_release_notes: true
-          make_latest: true
+          prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.build.outputs.prerelease != 'true' }}
           fail_on_unmatched_files: true
           files: |
             firmware/${{ env.IMAGE }}

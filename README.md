@@ -858,6 +858,8 @@ Requires **ESP-IDF v5.5.1** (other 5.5.x patch releases should work).
 . $IDF_PATH/export.sh
 idf.py build
 idf.py merge-bin -o PocketSSH-v1.3.0-release.bin   # -> build/PocketSSH-v1.3.0-release.bin
+# Optional: build with a specific version (reconfigure so CMake picks it up)
+FIRMWARE_VERSION=1.3.5 idf.py reconfigure build
 idf.py -p /dev/ttyACM0 flash monitor               # or flash the merged image at 0x0
 ```
 
@@ -884,24 +886,42 @@ build, test on a T-Deck, and commit both files. The *Dependency check* workflow 
 
 | Workflow | When | What it does | Blocks merges? |
 |---|---|---|---|
-| **Build firmware** (`build.yml`) | Push to `main` / `integration`, pull requests, `v*` tags | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin` as a workflow artifact. On `main`, a new `PROJECT_VER` is published as a GitHub release with notes, the image and its SHA-256 (see *Releasing* below) | Yes - the firmware must build |
+| **Build firmware** (`build.yml`) | Push to `main` / `integration`, pull requests, `v*` tags, manual *Run workflow* | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin` as a workflow artifact. Pushes to `main` release the next patch version automatically; manual runs choose the branch, bump or exact version (see *Releasing* below) | Yes - the firmware must build |
 | **Code quality** (`code-quality.yml`) | Push to `main`, pull requests | cppcheck static analysis, flawfinder security lint, and compiler warnings in `main/`, shown as annotations on the changed lines and in each job's summary | No - report only |
 | **Dependency check** (`dependency-check.yml`) | Weekly, and when pins change | Compares pinned components and ESP-IDF with the latest releases | No - report only |
 | **Dependabot** (`.github/dependabot.yml`) | Weekly | Opens PRs to update the GitHub Actions used above | - |
 
-**Releasing**: releases are automatic from `main`.
+**Releasing**: versions come from git tags (`v1.3.0`, `v1.3.1`, ...) and releases are automatic.
 
-1. On a branch (e.g. `integration`), set `PROJECT_VER` in the top-level `CMakeLists.txt`
-   to the new version (e.g. `1.4.0`).
-2. Add a `### v1.4.0 (<date>)` section to [Version History](#version-history). It becomes
-   the release notes, and the build fails if it's missing.
-3. Merge to `main`. The *Build firmware* workflow sees that `v1.4.0` hasn't been released,
-   builds the firmware, creates the `v1.4.0` tag and a GitHub release titled
-   "PocketSSH v1.4.0" with the notes, `PocketSSH-v1.4.0-release.bin` and its `.sha256`.
+- **Every merge/push to `main` publishes a release** with the next patch number
+  (latest `v1.3.4` → `v1.3.5`). The release is titled "PocketSSH v1.3.5" and has the
+  notes, `PocketSSH-v1.3.5-release.bin` and its `.sha256`; the device shows the same version.
+- **Manual release**: Actions → *Build firmware* → *Run workflow*, then pick:
 
-Pushes to `main` that don't change `PROJECT_VER` only build (the run notes the version is
-already released). Pushing a `v<version>` tag or running the workflow manually on `main` also
-releases; a tag that doesn't match `PROJECT_VER` fails the build.
+  | Field | Choices | Default |
+  |---|---|---|
+  | Branch to build and release | `main` or `integration` | `main` |
+  | Version bump | `patch`, `minor`, `major` | `patch` |
+  | Exact version | e.g. `1.4.0` (overrides the bump) | empty |
+
+  Leaving everything as is releases the next patch from `main`. Releases from
+  `integration` are published as **pre-releases** (not "Latest"), for testing before a merge.
+- **Pushing a tag** `vX.Y.Z` releases exactly that version.
+- Pushes to `integration` and pull requests only build; their artifacts are versioned
+  `<next>-dev.<commit>` (e.g. `1.3.5-dev.4733f93`).
+
+**Release notes**: if [Version History](#version-history) has a `### vX.Y.Z (<date>)` section
+for the version, it heads the release notes; GitHub then lists the merged pull requests and
+commits since the previous release. Without a section, that generated list is the notes -
+nothing is required for a patch release.
+
+**Bigger version jumps**: pick `minor`/`major` or an exact version when running the workflow,
+or raise the fallback version in `CMakeLists.txt` (`set(PROJECT_VER "1.4.0")`); a fallback
+higher than the latest release is used as the next version. Local builds show that fallback
+version; CI sets the real one (`FIRMWARE_VERSION`).
+
+A release never overwrites an existing one: if the version already exists, the run fails
+with a message instead.
 
 ## Credits
 

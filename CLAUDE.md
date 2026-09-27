@@ -97,8 +97,10 @@ keyboard and trackball. Every change should serve that job.
 - Match the surrounding style (4-space indent, `snake_case`, brace on its own line for
   functions, same line for control flow).
 - CI must build; the code-quality workflow is advisory but aim for zero new warnings.
-- Releases are automatic: bump `PROJECT_VER` in `CMakeLists.txt` and add a matching
-  `### v<version> (<date>)` Version History section in README.md (it becomes the release
-  notes; the build fails without it). Work on `integration`, merge to `main` to release.
+- Versions come from git tags; CI computes them (`.github/scripts/plan_release.py`) and
+  passes `FIRMWARE_VERSION` to the build. Every push to `main` releases the next patch;
+  manual runs pick branch (`main`/`integration` = pre-release), bump or exact version.
+  Don't hand-edit versions for patch releases. Work on `integration`, merge to `main` to
+  release. A `### vX.Y.Z (<date>)` Version History section is optional release-note text.
 - Update README.md (user-facing behavior) and SECURITY.md (anything security-relevant) with
   the change. Hardware behavior can only be confirmed on a real T-Deck; say so when it hasn't been.
