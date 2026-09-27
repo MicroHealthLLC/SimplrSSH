@@ -71,7 +71,9 @@ private:
         // Vault (master PIN)
         VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset,
         // SSH host key trust (known_hosts.cpp)
-        HostTrust, HostConfirmForget
+        HostTrust, HostConfirmForget,
+        // Storage / SD card backup (storage_menu.cpp)
+        StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase
     };
     enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, ChangePin };
     enum class SecretChange { Keep, Set, Clear };
@@ -237,6 +239,15 @@ private:
     void handle_hosts_command(const std::string& command);
     bool host_step_prompt();
     bool host_step_input(const std::string& raw, const std::string& input);
+    
+    // Storage: device vs SD card backup/restore (storage_menu.cpp)
+    void handle_storage_command(const std::string& command);
+    void storage_backup();
+    void storage_restore();
+    void storage_load_keys();
+    void reload_saved_settings();
+    bool storage_step_prompt();
+    bool storage_step_input(const std::string& raw, const std::string& input);
     
     // Master PIN / encrypted password vault (vault_menu.cpp)
     void handle_vault_command(const std::string& command);

@@ -28,3 +28,10 @@ CONFIG_LV_FONT_MONTSERRAT_20=n
 CONFIG_LV_FONT_MONTSERRAT_28=n
 # Skip the full PSRAM test on every boot
 CONFIG_SPIRAM_MEMTEST=n
+
+# --- Persistence -----------------------------------------------------------
+# The WiFi driver would keep its own plain-text copy of the WiFi password in NVS;
+# networks are saved by the app instead (password encrypted in the vault)
+CONFIG_ESP_WIFI_NVS_ENABLED=n
+# Long file names on the SD card (key files like backup_server.pem, backup folder)
+CONFIG_FATFS_LFN_HEAP=y

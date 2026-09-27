@@ -93,7 +93,8 @@ void SSHTerminal::wizard_goto(WizardStep step)
 
 void SSHTerminal::wizard_prompt()
 {
-    if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt() || host_step_prompt()) {
+    if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt() || host_step_prompt() ||
+        storage_step_prompt()) {
         return;
     }
 }
@@ -116,7 +117,8 @@ void SSHTerminal::wizard_handle_input(const std::string& raw_input)
     }
 
     if (profile_step_input(raw_input, input) || wifi_step_input(raw_input, input) ||
-        vault_step_input(raw_input, input) || host_step_input(raw_input, input)) {
+        vault_step_input(raw_input, input) || host_step_input(raw_input, input) ||
+        storage_step_input(raw_input, input)) {
         return;
     }
 }

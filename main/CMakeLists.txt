@@ -10,6 +10,9 @@ set(SOURCES
     "vault_menu.cpp"
     "secret_vault.cpp"
     "known_hosts.cpp"
+    "sd_card.cpp"
+    "settings_backup.cpp"
+    "storage_menu.cpp"
 )
 
 # List of include directories

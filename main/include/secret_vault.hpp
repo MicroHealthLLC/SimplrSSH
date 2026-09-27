@@ -13,7 +13,9 @@
 #define SECRET_VAULT_HPP
 
 #include "esp_err.h"
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #define VAULT_MIN_PIN_LENGTH 4
 
@@ -37,6 +39,13 @@ namespace vault
     esp_err_t get(const std::string& id, std::string& secret);
     esp_err_t remove(const std::string& id);
     bool has(const std::string& id);
+
+    // Raw access to the (already encrypted) vault files, for SD card backup/restore.
+    // Only vault file names are accepted ("vault.key", "s<16 hex>.enc").
+    bool is_vault_file_name(const std::string& name);
+    std::vector<std::string> list_files();
+    esp_err_t read_raw(const std::string& name, std::vector<uint8_t>& data);
+    esp_err_t write_raw(const std::string& name, const std::vector<uint8_t>& data);
 
     // Best-effort overwrite of a plaintext secret before it is released
     void wipe(std::string& s);

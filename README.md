@@ -33,6 +33,17 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 ## Version History
 
 ### v1.3.0 (September 26, 2026)
+- **Fixed**: Settings no longer disappear. Saved networks, profiles, trusted servers and
+  history live in a larger (256 KB) settings area placed after the app, so flashing a new
+  release image keeps them, and it no longer fills up and gets wiped at boot. *Flashing
+  v1.3.0 over an older version starts with empty settings one last time.*
+- **Added**: `storage` menu - see what is saved on the device, back it up to the SD card,
+  restore it, load SSH keys from the SD card without rebooting, or erase the device's settings.
+  Everything persists on the device without an SD card
+- **Added**: `connect <SSID> <PASSWORD>` offers to save the network (password encrypted), so it
+  reconnects after a restart
+- **Improved**: Long file names on the SD card (e.g. `backup_server.pem`)
+- **Security**: The WiFi driver no longer keeps its own plain-text copy of the WiFi password
 - **Security**: SSH server host keys are verified (trust on first use). A new server's
   `SHA256:` fingerprint is shown for you to confirm; a changed key is refused. `hosts` command
   lists and forgets trusted keys
@@ -227,7 +238,7 @@ Saved HomeNet (password encrypted).
 - **Auto-connect**: at boot the device scans and joins the strongest saved network in range,
   falling back to the next one if that fails. Up to 10 networks can be saved.
 - The one-line form still works: `connect <SSID> <PASSWORD>` (use quotes for spaces:
-  `connect "My WiFi" "my pass"`). It does not save the network.
+  `connect "My WiFi" "my pass"`). After connecting it offers to save the network.
 
 | Command | What it does |
 |---|---|
@@ -322,6 +333,45 @@ until you reboot or type `vault lock`. Press Enter at the PIN prompt to skip.
 > lost. Wizard answers (passwords, PINs) are never written to command history, and passwords
 > typed on the `connect`/`ssh`/`sshkey` command lines are masked and not stored.
 
+## Storage and Backups
+
+**Everything is saved on the device itself** (internal flash) and survives restarts, power-offs
+and firmware updates - no SD card needed. That includes saved WiFi networks, SSH profiles,
+trusted server keys, command history and the encrypted passwords. The SD card is only used for
+SSH key files and optional backups.
+
+Type `storage` to see what is saved and copy it between the device and the SD card:
+
+```
+== Storage ==
+This device (kept without an SD card):
+  3 profiles, 2 WiFi networks, 4 trusted servers
+  Saved passwords: encrypted, PIN set
+  SSH keys loaded: 2
+SD card backup: 3 profiles, 2 WiFi networks, 4 trusted servers
+ 1) Back up this device to SD card
+ 2) Restore from SD card to this device
+ 3) Load SSH keys from SD card
+ 4) Erase all settings on this device
+ 0) Exit menu
+Select [0-4]:
+```
+
+- **Back up** writes `/pocketssh/settings.dat` and `/pocketssh/vault.dat` to the SD card,
+  replacing an older backup only once the new one is complete. Passwords stay encrypted with
+  your master PIN; the backup contains no readable secrets.
+- **Restore** replaces the device's settings with the backup (after confirming). Saved
+  passwords then use the PIN that was set when the backup was made. A damaged or tampered
+  backup is rejected without changing anything.
+- **Load SSH keys** reads new `.pem` files from `/ssh_keys` without restarting.
+- **Erase** removes all profiles, networks, trusted servers, history and saved passwords
+  from the device (the SD card backup is kept).
+
+Shortcuts: `storage backup`, `storage restore`, `storage keys`.
+
+> Flashing a new release image keeps your settings. Choosing "Erase flash" in a flashing tool
+> wipes them - back up to the SD card first.
+
 ## Server Keys (Known Hosts)
 
 The first time you connect to a server, PocketSSH shows the server's host key fingerprint and
@@ -359,6 +409,7 @@ These run on the device (they are not sent to the SSH server):
 | `sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]` | SSH with an SD card key, without a profile |
 | `vault` | Master PIN and saved passwords (see [above](#saved-passwords-and-the-master-pin)) |
 | `hosts` | Trusted server keys (see [Server Keys](#server-keys-known-hosts)) |
+| `storage` | What is saved; SD card backup/restore; load keys (see [Storage](#storage-and-backups)) |
 | `exit` | Close the SSH session |
 | `clear` | Clear the screen |
 | `help` | Show the command list |
@@ -416,11 +467,14 @@ sshkey 192.168.1.100 22 pi rpi_key.pem
 
 ```
 /sdcard/
-└── ssh_keys/
-    ├── rpi_key.pem          ← Raspberry Pi
-    ├── server1.pem          ← Production server
-    ├── backup_server.pem    ← Backup server
-    └── dev_machine.pem      ← Development box
+├── ssh_keys/
+│   ├── rpi_key.pem          ← Raspberry Pi
+│   ├── server1.pem          ← Production server
+│   ├── backup_server.pem    ← Backup server
+│   └── dev_machine.pem      ← Development box
+└── pocketssh/               ← created by 'storage' backups
+    ├── settings.dat
+    └── vault.dat
 ```
 
 ### Key Management
@@ -429,7 +483,9 @@ sshkey 192.168.1.100 22 pi rpi_key.pem
 - Load as many keys as you need
 - Each server can have its own key
 - Keys are identified by filename
-- All keys loaded automatically on boot
+- All keys loaded automatically on boot; after adding keys, `storage keys` loads them without
+  restarting
+- Up to 8 keys (48 KB in total) are kept in memory
 
 **Supported Formats**
 - File extension: `.pem` or `.PEM` (case-insensitive)
@@ -711,6 +767,12 @@ Disconnected from SSH server
 
 ## Troubleshooting
 
+### Settings Missing After a Restart or Update
+- v1.3.0 and later keep settings across restarts and firmware updates. Updating *to* v1.3.0
+  from an older version starts with empty settings once (the settings area moved)
+- Flashing with "Erase flash" wipes settings; restore them with `storage` → *Restore*
+- If the device shows "Settings storage was unreadable and has been reset", restore a backup
+
 ### WiFi Connection Issues
 - Use `wifi` then *Scan and connect* to check the network is visible and pick it from the list
 - Auto-connect needs the network saved (`wifi list`) and in range; if you skip the PIN at boot,
@@ -766,7 +828,8 @@ A ready-to-deploy **merged binary** includes the bootloader, partition table, an
   - **Any commit**: open the *Build firmware* workflow run in the Actions tab and download the
     `PocketSSH-v<version>` artifact
   - **Local build**: `build/PocketSSH-v<version>-release.bin` (see [Building from Source](#building-from-source))
-- **Flash Address**: `0x0` (single merged binary)
+- **Flash Address**: `0x0` (single merged binary). Flashing it keeps your saved settings, which
+  live after the app in flash - don't use "Erase flash" unless you want a clean device
 - **Flash Settings**: 
   - **Mode**: DIO (Dual I/O)
   - **Frequency**: 80MHz
