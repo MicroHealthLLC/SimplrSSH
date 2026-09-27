@@ -14,7 +14,7 @@
 #include <vector>
 
 #define PROFILE_MAX_COUNT 20
-#define NETWORK_MAX_COUNT 10
+#define NETWORK_MAX_COUNT 20
 
 struct ConnectionProfile
 {
@@ -36,6 +36,7 @@ struct SavedNetwork
 {
     std::string ssid;
     bool secret_saved = false;  // WiFi password is in the vault (false = open network)
+    bool hidden = false;        // Not broadcast: auto-connect tries it even if a scan doesn't list it
 
     std::string secret_id() const { return "wifi:" + ssid; }
 };

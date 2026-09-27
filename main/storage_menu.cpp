@@ -69,8 +69,8 @@ void SSHTerminal::storage_backup()
     sdcard::unmount();
 
     if (err == ESP_OK) {
-        append_text(("Backed up " + describe(c) + " and " + plural(c.vault_files, "encrypted vault file") +
-                     " to /pocketssh on the SD card.\n").c_str());
+        append_text(("Backed up " + describe(c) + " and " + plural(c.vault_files, "saved password") +
+                     " (encrypted) to /pocketssh on the SD card.\n").c_str());
     } else {
         append_text("ERROR: Backup failed (card full or write-protected?). The old backup is unchanged.\n");
     }
@@ -102,8 +102,11 @@ void SSHTerminal::storage_restore()
     } else {
         append_text("WARNING: Restore was incomplete; check 'profile list' and 'wifi list'.\n");
     }
-    if (c.vault_files > 0) {
-        append_text("Saved passwords use the master PIN from when the backup was made.\n");
+    if (vault_was_reset) {
+        append_text("The backup's saved passwords belong to another device; they'll be asked\n"
+                    "for once and saved again.\n");
+    } else if (vault::has_pin()) {
+        append_text("Saved passwords use the PIN that was set when the backup was made.\n");
     }
 }
 
@@ -124,9 +127,12 @@ void SSHTerminal::storage_load_keys()
 // Re-reads everything stored in NVS / the vault after a restore or erase
 void SSHTerminal::reload_saved_settings()
 {
-    vault::lock();
+    vault_was_reset = vault::init();
     profiles = profile_store::load();
     saved_networks = network_store::load();
+    if (vault_was_reset) {
+        clear_all_saved_secret_flags();  // Those passwords are gone; ask for them again
+    }
     command_history.clear();
     history_index = -1;
     history_needs_save = false;
@@ -141,8 +147,8 @@ bool SSHTerminal::storage_step_prompt()
             append_text("\n== Storage ==\n");
             append_text("This device (kept without an SD card):\n");
             append_text(("  " + describe(device) + "\n").c_str());
-            append_text(vault::is_set_up() ? "  Saved passwords: encrypted, PIN set\n"
-                                           : "  Saved passwords: none yet\n");
+            append_text(("  Saved passwords: " + std::to_string(device.vault_files) + " (encrypted" +
+                         (vault::has_pin() ? ", PIN" : "") + ")\n").c_str());
             append_text(("  SSH keys loaded: " + std::to_string(loaded_keys.size()) + "\n").c_str());
 
             refresh_display_now();
@@ -160,7 +166,7 @@ bool SSHTerminal::storage_step_prompt()
                         " 2) Restore from SD card to this device\n"
                         " 3) Load SSH keys from SD card\n"
                         " 4) Erase all settings on this device\n"
-                        " 0) Exit menu\n"
+                        " 0) Back\n"
                         "Select [0-4]: ");
             wizard.choices = {"1", "2", "3", "4", "0"};
             return true;
@@ -197,7 +203,7 @@ bool SSHTerminal::storage_step_input(const std::string& raw_input, const std::st
             } else if (input == "4") {
                 wizard_goto(WizardStep::StorageConfirmErase);
             } else if (input == "0") {
-                wizard_reset();
+                go_home();
             } else {
                 append_text("Invalid choice.\n");
                 wizard_prompt();

@@ -18,6 +18,7 @@
 #include "libssh2.h"
 #include "battery_measurement.hpp"
 #include "connection_profiles.hpp"
+#include "openai_client.hpp"
 
 class SSHTerminal
 {
@@ -49,6 +50,14 @@ public:
     
     // Runs once after boot, from the input task (WiFi auto-connect)
     void run_startup_tasks();
+    // Called regularly from the input task: WiFi reconnect, return to menu after SSH ends
+    void background_tick();
+    // Trackball held down (start) / released (long_press: held >= 1 s)
+    void on_trackball_hold(bool start, bool long_press);
+    // Shows the home menu (startup, 'menu', 'exit')
+    void go_home();
+    // Boot message listing what was restored from the device's storage
+    void print_saved_summary();
     
     void update_status_bar();
     
@@ -66,16 +75,20 @@ private:
         MainMenu, PickProfile, Name, Host, Port, User, AuthMethod, PickKey,
         Password, KeyPassphrase, Review, ConfirmDelete, ConnectSecret,
         // WiFi
-        WifiMenu, WifiPickScan, WifiHiddenSsid, WifiPassword, WifiSave,
+        WifiMenu, WifiPickScan, WifiHiddenSsid, WifiPassword,
         WifiPickSaved, WifiConfirmForget,
         // Vault (master PIN)
         VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset,
         // SSH host key trust (known_hosts.cpp)
         HostTrust, HostConfirmForget,
         // Storage / SD card backup (storage_menu.cpp)
-        StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase
+        StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase,
+        // Home and security menus (home_menu.cpp)
+        HomeMenu, SecurityMenu,
+        // ChatGPT (chat_app.cpp)
+        ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModel, ChatModelOther
     };
-    enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, ChangePin };
+    enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, SetPin, ChangePin, RemovePin };
     enum class SecretChange { Keep, Set, Clear };
     struct WifiScanResult {
         std::string ssid;
@@ -163,6 +176,28 @@ private:
     std::vector<SavedNetwork> saved_networks;
     std::string wifi_ssid;
     ProfileWizard wizard;
+    bool vault_was_reset = false;      // Passwords from another device were discarded at boot
+    bool wifi_auto_enabled = true;     // Off after the user disconnects WiFi on purpose
+    int64_t wifi_next_retry_ms = 0;    // When wifi_maintain() may try again
+    int wifi_retry_delay_s = 0;
+    int64_t last_input_ms = 0;         // Background reconnects wait until the user is idle
+    volatile bool home_pending = false;  // Set by other tasks (SSH closed): show the home menu
+
+    // ChatGPT (chat_app.cpp). History is touched only while holding the display lock.
+    std::string chat_model = "gpt-4o-mini";
+    bool chat_speak = false;           // Read replies aloud
+    std::vector<openai::Message> chat_history;
+    lv_obj_t* chat_view = NULL;
+    bool chat_active = false;
+    bool chat_open_after_key = false;
+    bool chat_job_voice = false;
+    volatile bool chat_busy = false;
+    volatile bool chat_recording = false;
+    volatile uint32_t chat_generation = 0;  // Bumped when the chat view closes
+    std::string input_banner;          // Shown instead of the input line (e.g. recording)
+    int pty_cols = 80;                 // Terminal size reported to SSH servers
+    int pty_rows = 24;
+    bool wifi_quiet_connect = false;   // Background reconnect: no progress dots
     
     void update_input_display();
     void process_received_data(const char* data, size_t len);
@@ -226,8 +261,8 @@ private:
     void wifi_scan_and_pick();
     void wifi_choose_network(const std::string& ssid, bool open);
     void wifi_connect_with(const std::string& password, bool from_vault);
-    void wifi_remember_network();
-    void wifi_auto_connect();
+    void wifi_remember_network(const std::string& ssid, const std::string& password, bool hidden);
+    bool wifi_auto_connect(bool quiet);
     bool wifi_step_prompt();
     bool wifi_step_input(const std::string& raw, const std::string& input);
     
@@ -249,6 +284,34 @@ private:
     bool storage_step_prompt();
     bool storage_step_input(const std::string& raw, const std::string& input);
     
+    // Commands typed on the input line (ssh_terminal.cpp)
+    void execute_command(const std::string& cmd);
+    void wifi_maintain();
+
+    // Home and security menus (home_menu.cpp)
+    void show_menu_after(WizardStep menu);
+    bool home_step_prompt();
+    bool home_step_input(const std::string& raw, const std::string& input);
+
+    // ChatGPT (chat_app.cpp)
+    void chat_load_settings();
+    void chat_save_settings();
+    void handle_chat_command(const std::string& command);
+    void open_chat();
+    void close_chat();
+    void chat_clear();
+    void chat_submit(const std::string& text);
+    void chat_start_job(bool voice);
+    void chat_job();
+    lv_obj_t* chat_add_bubble(int kind, const std::string& text);
+    lv_obj_t* chat_ui_bubble(uint32_t generation, int kind, const std::string& text);
+    void chat_ui_update(uint32_t generation, lv_obj_t* label, const std::string& text);
+    void chat_ui_banner(const std::string& text);
+    void chat_store_key(const std::string& key);
+    static void chat_worker(void* param);
+    bool chat_step_prompt();
+    bool chat_step_input(const std::string& raw, const std::string& input);
+
     // Master PIN / encrypted password vault (vault_menu.cpp)
     void handle_vault_command(const std::string& command);
     void with_vault(std::function<void()> then);

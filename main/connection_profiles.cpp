@@ -203,15 +203,18 @@ std::vector<SavedNetwork> network_store::load()
     std::vector<SavedNetwork> networks;
 
     for (const auto& record : load_records("wifi_nets", 'n', NETWORK_MAX_COUNT)) {
-        // 1 | ssid | secret_saved
+        // 2 | ssid | secret_saved | hidden   (version 1 had no hidden field)
         std::vector<std::string> f = split_fields(record);
-        if (f.size() != 3 || f[0] != "1" || f[1].empty()) {
+        bool v1 = f.size() == 3 && f[0] == "1";
+        bool v2 = f.size() == 4 && f[0] == "2";
+        if ((!v1 && !v2) || f[1].empty()) {
             ESP_LOGW(TAG, "Skipping unreadable network record");
             continue;
         }
         SavedNetwork n;
         n.ssid = f[1];
         n.secret_saved = f[2] == "1";
+        n.hidden = v2 && f[3] == "1";
         networks.push_back(n);
     }
 
@@ -223,7 +226,7 @@ esp_err_t network_store::save(const std::vector<SavedNetwork>& networks)
 {
     std::vector<std::string> records;
     for (const auto& n : networks) {
-        records.push_back(join_fields({"1", n.ssid, n.secret_saved ? "1" : "0"}));
+        records.push_back(join_fields({"2", n.ssid, n.secret_saved ? "1" : "0", n.hidden ? "1" : "0"}));
     }
     return save_records("wifi_nets", 'n', NETWORK_MAX_COUNT, records);
 }

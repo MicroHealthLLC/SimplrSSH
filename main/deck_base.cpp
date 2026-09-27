@@ -45,17 +45,16 @@ static SSHTerminal *ssh_terminal = NULL;
 
 // Trackball events, handled by keypad_task so only one task runs the terminal
 // (menus, WiFi scans, crypto and SSH connects need a large stack)
-enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_ENTER, INPUT_DELETE };
+enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_ENTER, INPUT_HOLD_START, INPUT_HOLD_END, INPUT_HOLD_END_LONG };
 static QueueHandle_t input_events = NULL;
 
 void keypad_task(void *param)
 {
     C3Keyboard keyboard(i2c_handle);
-    if (keyboard.init() != ESP_OK)
-    {
+    // Keep running without the keyboard: this task also runs WiFi auto-connect and trackball input
+    bool keyboard_ok = keyboard.init() == ESP_OK;
+    if (!keyboard_ok) {
         ESP_LOGE("KEYPAD", "Failed to initialize keypad!");
-        vTaskDelete(NULL);
-        return;
     }
 
     bool startup_pending = true;
@@ -70,7 +69,7 @@ void keypad_task(void *param)
         }
 
         // Non-blocking display lock: keep rendering responsive, drop input if the display is busy
-        uint32_t key = keyboard.get_key();
+        uint32_t key = keyboard_ok ? keyboard.get_key() : 0;
         if (key && bsp_display_lock(0)) {
             ssh_terminal->handle_key_input((char)key);
             bsp_display_unlock();
@@ -85,8 +84,16 @@ void keypad_task(void *param)
                 case INPUT_UP:     ssh_terminal->navigate_history(1); break;   // Older command / previous choice
                 case INPUT_DOWN:   ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
                 case INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
-                case INPUT_DELETE: ssh_terminal->delete_current_history_entry(); break;
+                case INPUT_HOLD_START:    ssh_terminal->on_trackball_hold(true, false); break;   // Push-to-talk in chat
+                case INPUT_HOLD_END:      ssh_terminal->on_trackball_hold(false, false); break;
+                case INPUT_HOLD_END_LONG: ssh_terminal->on_trackball_hold(false, true); break;   // Else: delete history entry
             }
+            bsp_display_unlock();
+        }
+
+        // WiFi reconnect, return to the menu after an SSH session ends
+        if (bsp_display_lock(0)) {
+            ssh_terminal->background_tick();
             bsp_display_unlock();
         }
 
@@ -94,19 +101,23 @@ void keypad_task(void *param)
     }
 }
 
-// Polls the trackball and queues events; the work happens in keypad_task
+// Polls the trackball and queues events; the work happens in keypad_task.
+// Press: Enter. Hold (> 0.4 s): HOLD_START, then HOLD_END(_LONG) on release.
 void trackball_task(void *param)
 {
     bool last_up = true;
     bool last_down = true;
     bool last_press = true;
+    bool holding = false;
     TickType_t press_start = 0;
-    const TickType_t LONG_PRESS = pdMS_TO_TICKS(1000);
+    const TickType_t HOLD = pdMS_TO_TICKS(400);
+    const TickType_t LONG_HOLD = pdMS_TO_TICKS(1000);
 
     while (1) {
         bool up = gpio_get_level(BOARD_TBOX_G01);
         bool down = gpio_get_level(BOARD_TBOX_G03);
         bool press = gpio_get_level(BOARD_BOOT_PIN);
+        TickType_t now = xTaskGetTickCount();
         uint8_t event;
 
         if (!up && last_up) {
@@ -118,17 +129,21 @@ void trackball_task(void *param)
             xQueueSend(input_events, &event, 0);
         }
         if (!press && last_press) {
-            press_start = xTaskGetTickCount();
+            press_start = now;
+        } else if (!press && !holding && now - press_start >= HOLD) {
+            holding = true;
+            event = INPUT_HOLD_START;
+            xQueueSend(input_events, &event, 0);
         } else if (press && !last_press) {
-            // Long press deletes the shown history entry, short press is Enter
-            event = (xTaskGetTickCount() - press_start >= LONG_PRESS) ? INPUT_DELETE : INPUT_ENTER;
+            event = !holding ? INPUT_ENTER : (now - press_start >= LONG_HOLD ? INPUT_HOLD_END_LONG : INPUT_HOLD_END);
+            holding = false;
             xQueueSend(input_events, &event, 0);
         }
 
         last_up = up;
         last_down = down;
         last_press = press;
-        vTaskDelay(pdMS_TO_TICKS(50));
+        vTaskDelay(pdMS_TO_TICKS(30));
     }
 }
 
@@ -279,6 +294,8 @@ extern "C" void app_main(void)
 #else
     ssh_terminal->append_text("PocketSSH Terminal Ready\n");
 #endif
+
+    ssh_terminal->print_saved_summary();
 
     // Display loaded SSH keys
     auto loaded_keys = ssh_terminal->get_loaded_key_names();

@@ -13,6 +13,10 @@ set(SOURCES
     "sd_card.cpp"
     "settings_backup.cpp"
     "storage_menu.cpp"
+    "home_menu.cpp"
+    "chat_app.cpp"
+    "openai_client.cpp"
+    "audio.cpp"
 )
 
 # List of include directories
@@ -32,7 +36,9 @@ set(REQUIRED_COMPONENTS
     esp_netif
     esp_event
     esp_timer
-    spiffs
+    esp_http_client
+    json
+    esp_driver_i2s
     mbedtls
 )
 

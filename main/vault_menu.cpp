@@ -1,8 +1,9 @@
 /*
  * Vault Menu
- * Master PIN prompts for the encrypted password vault: creating the PIN the
- * first time a password is saved, unlocking it when a saved password is needed,
- * and the 'vault' command (status, lock, unlock, change PIN, reset).
+ * Saved passwords are encrypted on the device and unlock automatically, so WiFi
+ * reconnects with no prompts. An optional master PIN adds protection: then the
+ * PIN is asked once per boot the first time a saved password is needed.
+ * 'vault' command: status, pin (add/change), nopin, lock, unlock, reset.
  */
 
 #include "ssh_terminal.hpp"
@@ -23,11 +24,11 @@ static std::string trim_lower(const std::string& s)
     return t;
 }
 
-// Runs `then` once the vault is unlocked, asking for (or creating) the PIN first
+// Runs `then` once saved passwords are readable, asking for the PIN only if one is set
 void SSHTerminal::with_vault(std::function<void()> then)
 {
-    if (!vault::is_mounted()) {
-        append_text("ERROR: Secure storage is unavailable.\n");
+    if (!vault::is_available()) {
+        append_text("ERROR: Settings storage is unavailable; passwords can't be saved.\n");
         wizard_done();
         return;
     }
@@ -35,15 +36,9 @@ void SSHTerminal::with_vault(std::function<void()> then)
         then();
         return;
     }
-
     wizard.after_unlock = then;
     wizard.pin_attempts = 0;
-    if (vault::is_set_up()) {
-        wizard_goto(WizardStep::VaultUnlock);
-    } else {
-        append_text("Saved passwords are encrypted with a master PIN.\n");
-        wizard_goto(WizardStep::VaultNewPin);
-    }
+    wizard_goto(WizardStep::VaultUnlock);
 }
 
 void SSHTerminal::clear_all_saved_secret_flags()
@@ -65,43 +60,52 @@ void SSHTerminal::handle_vault_command(const std::string& command)
 
     wizard_reset();
 
-    if (!vault::is_mounted()) {
-        append_text("ERROR: Secure storage is unavailable.\n");
+    if (!vault::is_available()) {
+        append_text("ERROR: Settings storage is unavailable.\n");
         return;
     }
 
     if (sub.empty() || sub == "status") {
-        if (!vault::is_set_up()) {
-            append_text("Vault: no PIN yet (created when you first save a password)\n");
+        std::string n = std::to_string(vault::count());
+        if (!vault::has_pin()) {
+            append_text(("Saved passwords: " + n + ", encrypted on this device and unlocked\n"
+                         "automatically (no PIN). For extra protection: vault pin\n").c_str());
         } else {
-            append_text(vault::is_unlocked() ? "Vault: PIN set, unlocked\n" : "Vault: PIN set, locked\n");
+            append_text(("Saved passwords: " + n + ", protected by your PIN (" +
+                         (vault::is_unlocked() ? "unlocked" : "locked") + ").\n").c_str());
+            append_text("  vault pin (change) | vault nopin | vault lock | vault unlock\n");
         }
-        append_text("  vault lock | vault unlock | vault pin | vault reset\n");
+        append_text("  vault reset - erase all saved passwords\n");
+    } else if (sub == "pin") {
+        wizard.action = vault::has_pin() ? WizardAction::ChangePin : WizardAction::SetPin;
+        wizard_goto(vault::has_pin() ? WizardStep::VaultOldPin : WizardStep::VaultNewPin);
+    } else if (sub == "nopin") {
+        if (!vault::has_pin()) {
+            append_text("No PIN is set; saved passwords already unlock automatically.\n");
+        } else {
+            wizard.action = WizardAction::RemovePin;
+            wizard_goto(WizardStep::VaultOldPin);
+        }
     } else if (sub == "lock") {
-        vault::lock();
-        append_text("Vault locked. Saved passwords need the PIN again.\n");
+        if (!vault::has_pin()) {
+            append_text("No PIN is set, so there is nothing to lock. Add one with: vault pin\n");
+        } else {
+            vault::lock();
+            append_text("Locked. Saved passwords need the PIN again.\n");
+        }
     } else if (sub == "unlock") {
-        if (!vault::is_set_up()) {
-            append_text("No PIN set yet.\n");
-        } else if (vault::is_unlocked()) {
-            append_text("Vault already unlocked.\n");
+        if (vault::is_unlocked()) {
+            append_text("Saved passwords are already unlocked.\n");
         } else {
             with_vault([this]() {
                 wizard_reset();
-                append_text("Vault unlocked.\n");
+                append_text("Unlocked.\n");
             });
-        }
-    } else if (sub == "pin") {
-        if (!vault::is_set_up()) {
-            append_text("No PIN set yet. One is created when you first save a password.\n");
-        } else {
-            wizard.action = WizardAction::ChangePin;
-            wizard_goto(WizardStep::VaultOldPin);
         }
     } else if (sub == "reset") {
         wizard_goto(WizardStep::VaultConfirmReset);
     } else {
-        append_text("Usage: vault [status|lock|unlock|pin|reset]\n");
+        append_text("Usage: vault [status|pin|nopin|lock|unlock|reset]\n");
     }
 }
 
@@ -109,21 +113,19 @@ bool SSHTerminal::vault_step_prompt()
 {
     switch (wizard.step) {
         case WizardStep::VaultUnlock:
-            append_text("Master PIN (Enter = skip): ");
+            append_text("PIN to unlock saved passwords (Enter = skip): ");
             return true;
         case WizardStep::VaultOldPin:
             append_text("Current PIN: ");
             return true;
         case WizardStep::VaultNewPin:
-            append_text(wizard.action == WizardAction::ChangePin
-                        ? "New PIN (min 4 chars): "
-                        : "Create master PIN (min 4 chars, Enter = cancel): ");
+            append_text("New PIN (min 4 chars, Enter = cancel): ");
             return true;
         case WizardStep::VaultConfirmPin:
             append_text("Confirm PIN: ");
             return true;
         case WizardStep::VaultConfirmReset:
-            append_text("Erase ALL saved passwords and the PIN? (y/n) [n]: ");
+            append_text("Erase ALL saved passwords? (y/n) [n]: ");
             wizard.choices = {"n", "y"};
             return true;
         default:
@@ -136,7 +138,7 @@ bool SSHTerminal::vault_step_input(const std::string& raw_input, const std::stri
     switch (wizard.step) {
         case WizardStep::VaultUnlock: {
             if (raw_input.empty()) {
-                append_text("Skipped - vault stays locked.\n");
+                append_text("Skipped - saved passwords stay locked.\n");
                 wizard_done();
                 break;
             }
@@ -156,7 +158,7 @@ bool SSHTerminal::vault_step_input(const std::string& raw_input, const std::stri
                 wizard_prompt();
             } else {
                 append_text(err == ESP_ERR_INVALID_ARG ? "Wrong PIN - giving up.\n"
-                                                       : "ERROR: Vault key file is unreadable.\n");
+                                                       : "ERROR: Saved passwords are unreadable.\n");
                 wizard_done();
             }
             break;
@@ -169,6 +171,20 @@ bool SSHTerminal::vault_step_input(const std::string& raw_input, const std::stri
                 break;
             }
             refresh_display_now();
+            if (wizard.action == WizardAction::RemovePin) {
+                esp_err_t err = vault::remove_pin(raw_input);
+                if (err == ESP_OK) {
+                    append_text("PIN removed. Saved passwords now unlock automatically.\n");
+                    wizard_done();
+                } else if (err == ESP_ERR_INVALID_ARG && ++wizard.pin_attempts < MAX_PIN_ATTEMPTS) {
+                    append_text("Wrong PIN.\n");
+                    wizard_prompt();
+                } else {
+                    append_text("Wrong PIN - giving up.\n");
+                    wizard_done();
+                }
+                break;
+            }
             esp_err_t err = vault::unlock(raw_input);
             if (err == ESP_OK) {
                 vault::wipe(wizard.secret);
@@ -206,29 +222,17 @@ bool SSHTerminal::vault_step_input(const std::string& raw_input, const std::stri
                 break;
             }
             refresh_display_now();
-            if (wizard.action == WizardAction::ChangePin) {
-                if (vault::change_pin(wizard.secret, wizard.pin) == ESP_OK) {
-                    append_text("PIN changed.\n");
-                } else {
-                    append_text("ERROR: Failed to change PIN.\n");
-                }
-                wizard_done();
-                break;
-            }
-            if (vault::setup(wizard.pin) != ESP_OK) {
-                append_text("ERROR: Failed to create the vault.\n");
-                wizard_done();
-                break;
-            }
-            vault::wipe(wizard.pin);
-            append_text("PIN set. It can't be recovered - 'vault reset' erases saved passwords.\n");
-            auto then = wizard.after_unlock;
-            wizard.after_unlock = nullptr;
-            if (then) {
-                then();
+            esp_err_t err = wizard.action == WizardAction::ChangePin ? vault::change_pin(wizard.secret, wizard.pin)
+                                                                     : vault::set_pin(wizard.pin);
+            if (err == ESP_OK) {
+                append_text(wizard.action == WizardAction::ChangePin
+                            ? "PIN changed.\n"
+                            : "PIN set. You'll enter it once after each restart to use saved\n"
+                              "passwords. It can't be recovered - 'vault reset' erases them.\n");
             } else {
-                wizard_done();
+                append_text("ERROR: Failed to set the PIN.\n");
             }
+            wizard_done();
             break;
         }
 

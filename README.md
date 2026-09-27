@@ -32,6 +32,34 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
+### v1.4.0 (September 27, 2026)
+- **Added**: Home menu at startup - WiFi, SSH servers, ChatGPT, Storage, Security. `menu`
+  shows it anytime; `exit` returns to it (closing SSH first) instead of leaving you at a prompt
+- **Added**: ChatGPT app - chat with an OpenAI model over WiFi: your messages on the right,
+  replies on the left, streaming as they're written. One chat session; `clear` starts over
+- **Added**: Voice - hold the trackball to talk (T-Deck microphone -> OpenAI Whisper), let go to
+  send; optional spoken replies through the T-Deck speaker
+- **Added**: Choose the model (gpt-4o-mini, gpt-4.1-mini, gpt-4.1-nano, gpt-4o or any name); the
+  API key is typed or loaded from `openai.key` on the SD card, saved encrypted (PIN-protected if set)
+- **Improved**: Full-screen terminal - no borders, one-line status bar, more lines of text; drag
+  to scroll back; old lines are trimmed instead of the screen being wiped; SSH servers are told
+  the real screen width so output wraps to fit
+- **Fixed**: Long messages (over 256 characters) lost their beginning on screen
+
+### v1.3.2 (September 27, 2026)
+- **Fixed**: WiFi networks now always save. Every network you connect to (with the `wifi` menu
+  or `connect <SSID> <PASSWORD>`) is saved on the device right away, with its password
+  encrypted - no questions, no PIN, no SD card. Previously saving required creating a PIN, and
+  skipping that step silently saved nothing
+- **Fixed**: After a restart the device reconnects to your saved WiFi by itself, with no PIN
+  prompt. If WiFi drops or you're out of range, it keeps reconnecting in the background
+- **Added**: Hidden networks auto-connect too; up to 20 networks are remembered (most recent first)
+- **Changed**: Saved passwords are encrypted with a key unique to this device and unlock
+  automatically. A master PIN is now optional (`vault pin`), for extra protection
+- **Changed**: Saved passwords live in the same built-in settings storage as everything else
+  (the separate SPIFFS partition is gone, which also removes a slow first-boot format)
+- **Improved**: The boot screen shows what is saved ("Saved on this device: 2 WiFi networks, ...")
+
 ### v1.3.0 (September 26, 2026)
 - **Fixed**: Settings no longer disappear. Saved networks, profiles, trusted servers and
   history live in a larger (256 KB) settings area placed after the app, so flashing a new
@@ -171,19 +199,31 @@ Quick access to commonly used control sequences:
 
 ### First-Time Setup
 
-Everything is menu driven: type a command, then answer each prompt by typing a number (or text)
-and pressing Enter. You can also **roll the trackball** to cycle through the numbered choices and
-**press it** to confirm. Type `cancel` (or tap Esc in the special keys panel) at any prompt to back out.
+The device starts at the **home menu**:
 
-1. **Connect to WiFi** - type `wifi` and choose *Scan and connect*, pick your network, enter the
-   password, and answer `y` to save it. The first time you save a password you'll create a
-   **master PIN** that encrypts it (see [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin)).
+```
+== PocketSSH ==
+WiFi: HomeNet | Saved: 2 WiFi, 3 SSH
+ 1) WiFi
+ 2) SSH servers
+ 3) ChatGPT
+ 4) Storage (device / SD card)
+ 5) Security (PIN, server keys)
+Select 1-5, or type a command:
+```
 
-2. **Save an SSH server** - type `profile`, choose *Add*, and fill in name, host, port and user.
-   Pick an SSH key from the list of keys on the SD card, or choose password login.
+Type a number and press Enter (or roll the trackball to pick, press it to confirm). Every
+screen has `0) Back`; `menu` or `exit` always brings you home, and `cancel` (or Esc in the
+special keys panel) backs out of any prompt. The numbers 1-5 work even when the menu isn't
+on screen.
 
-3. **Connect** - type `profile`, choose *Connect*, and pick the server. Or type
-   `profile connect <name>` directly.
+1. **WiFi** (1) - *Scan and connect*, pick your network and enter the password. That's it: the
+   network is saved on the device (password encrypted) and it reconnects automatically.
+
+2. **Save an SSH server** (2) - choose *Add*, and fill in name, host, port and user. Pick an
+   SSH key from the list of keys on the SD card, or choose password login.
+
+3. **Connect** (2) - choose *Connect* and pick the server. Or type `profile connect <name>`.
 
 4. **Use the shell** - once connected, anything you type is sent to the server:
    ```
@@ -192,12 +232,60 @@ and pressing Enter. You can also **roll the trackball** to cycle through the num
    vim myfile.txt
    ```
 
-5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH;
-   `disconnect` turns WiFi off.
+5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH and
+   return to the menu; `disconnect` turns WiFi off.
 
-On later boots the device **auto-connects to the strongest saved WiFi network in range** once
-it boots (it asks for your PIN first if that network's password is saved).
-Then just type `profile` and pick a server.
+6. **ChatGPT** (3) - add your OpenAI API key once, then chat by typing or by voice
+   (see [ChatGPT](#chatgpt)).
+
+**The screen**: the whole display is text - a one-line status bar at the top (battery, WiFi,
+SSH), the terminal, and the input line at the bottom. **Drag up/down on the screen to scroll
+back**; the newest ~4 KB of output is kept. Swipe left for the special keys panel.
+
+From then on the device **connects to the strongest saved WiFi network in range by itself**
+every time it starts, and reconnects if WiFi drops. No SD card is needed - everything is
+saved on the device. Then just type `profile` and pick a server.
+
+## ChatGPT
+
+Chat with an OpenAI model over WiFi: home menu → **3) ChatGPT**, or type `chat`.
+
+```
+== ChatGPT ==
+Model: gpt-4o-mini | Key: saved | Spoken replies: off
+ 1) Chat
+ 2) API key
+ 3) Model
+ 4) Spoken replies: turn on
+ 5) New chat (clear)
+ 0) Back
+```
+
+**First time**: *Chat* asks for your API key (from platform.openai.com → API keys):
+*Type it*, or - easier on the T-Deck keyboard - put the key alone in a file named
+`openai.key` at the top of the SD card and choose *Load from SD card*. The key is saved
+encrypted on the device (PIN-protected if you've set a PIN), and you're offered to delete the
+file from the card.
+
+**Chatting**: your messages appear on the right, replies on the left as they're written; the
+input line stays at the bottom. There is one chat session; it's kept until you clear it or
+restart. Type these words alone as commands:
+
+| Type | What it does |
+|---|---|
+| `clear` | Start a new chat |
+| `settings` | Model, API key, spoken replies |
+| `exit` or `menu` | Back to the home menu (the chat is kept) |
+
+**Voice**: **hold the trackball** and speak; the input line shows `* Recording 3s - release to
+send`. Let go to send: the T-Deck microphone recording (up to 30 s) is transcribed by OpenAI
+Whisper and sent to the model. Turn on *Spoken replies* to hear answers through the speaker.
+
+**Model**: gpt-4o-mini (default, fast and low cost), gpt-4.1-mini, gpt-4.1-nano, gpt-4o, or type
+any other model name. Replies are kept short and plain for the small screen.
+
+> **Privacy**: messages and voice recordings are sent to OpenAI (api.openai.com, HTTPS with
+> certificate verification) only while you use ChatGPT, and billed to your API key.
 
 ## WiFi Wizard
 
@@ -224,21 +312,24 @@ Select [1-5, 0=back]: 2
 Password for HomeNet (Enter = back): ********
 Connecting to HomeNet...
 Connected to HomeNet.
-Save HomeNet so it auto-connects? (y/n) [y]: y
-Saved HomeNet (password encrypted).
+Saved HomeNet on this device - it will reconnect automatically.
 ```
 
 - **Signal bars**: `####` excellent, `###` good, `##` fair, `#` weak. `open` = no password,
   `saved` = already saved, `connected` = the current network.
-- **Saved networks** connect without asking for the password (the PIN is asked once if the vault is locked).
+- **Every network that connects is saved** automatically (password encrypted on the device) and
+  connects without asking again. Remove one with `wifi forget`.
 - **Wrong password?** You're asked again; press Enter on an empty password to go back.
 - **Switching networks**: pick a different network from *Scan and connect* or *Connect to saved
   network* at any time. Close SSH first (`exit`), since changing WiFi drops the session.
 - **Hidden networks**: choose *Hidden network...* and type the SSID.
-- **Auto-connect**: at boot the device scans and joins the strongest saved network in range,
-  falling back to the next one if that fails. Up to 10 networks can be saved.
-- The one-line form still works: `connect <SSID> <PASSWORD>` (use quotes for spaces:
-  `connect "My WiFi" "my pass"`). After connecting it offers to save the network.
+- **Auto-connect**: at boot the device joins the strongest saved network in range (then saved
+  hidden networks), falling back to the next one if that fails. If WiFi drops or no saved
+  network is in range, it keeps trying quietly in the background (after 30 s, then less often,
+  up to every 5 minutes). `wifi off` / `disconnect` pauses this until you connect again.
+- Up to 20 networks are remembered; connecting to a 21st forgets the one used least recently.
+- The one-line form works too: `connect <SSID> <PASSWORD>` (use quotes for spaces:
+  `connect "My WiFi" "my pass"`), and saves the network the same way.
 
 | Command | What it does |
 |---|---|
@@ -303,35 +394,32 @@ Select [1]: 2
 | `profile edit [NAME or #]` | Edit a profile |
 | `profile delete [NAME or #]` | Delete a profile and its saved password |
 
-## Saved Passwords and the Master PIN
+## Saved Passwords
 
-WiFi passwords, SSH passwords and SSH key passphrases are **never stored in plain text**. They
-are saved as encrypted files on the device's internal `storage` flash partition:
+WiFi passwords, SSH passwords and SSH key passphrases are **saved encrypted on the device** and
+used automatically - there is nothing to set up.
 
-- Each secret is encrypted with **AES-256-GCM** using a random 256-bit data key.
-- The data key is itself encrypted with a key derived from your **master PIN**
-  (PBKDF2-HMAC-SHA256, 20,000 iterations, random salt). The PIN is never stored.
-- File names are hashes, so SSIDs and server names don't appear on flash either.
-
-**Creating the PIN**: the first time you save a password, you're asked to create a PIN
-(at least 4 characters; longer is stronger) and type it twice.
-
-**Unlocking**: the vault is locked at every boot. The first time a saved password is needed
-(auto-connecting WiFi, or connecting a profile) you're asked for the PIN once; it stays unlocked
-until you reboot or type `vault lock`. Press Enter at the PIN prompt to skip.
+- Each password is encrypted with **AES-256-GCM** using a random 256-bit data key, stored in the
+  device's built-in settings storage (NVS). Record names are hashes, so SSIDs and server names
+  don't appear in them either.
+- By default the data key is wrapped with a random secret unique to this device, so saved
+  passwords **unlock automatically** at boot and WiFi reconnects with no prompts.
+- **Optional master PIN** (`vault pin`): the data key is then wrapped with a key derived from
+  your PIN (PBKDF2-HMAC-SHA256, 20,000 iterations). You enter the PIN once after each restart
+  before saved passwords can be used (WiFi auto-connect asks for it). The PIN is never stored.
 
 | Command | What it does |
 |---|---|
-| `vault` | Show whether a PIN is set and whether the vault is unlocked |
-| `vault unlock` | Enter the PIN now |
-| `vault lock` | Forget the key until the PIN is entered again |
-| `vault pin` | Change the PIN (saved passwords are kept) |
-| `vault reset` | Forgot the PIN? Erase all saved passwords and the PIN. Profiles and networks are kept; you'll be asked for their passwords again |
+| `vault` | How many passwords are saved, and whether a PIN protects them |
+| `vault pin` | Add a PIN (or change it) |
+| `vault nopin` | Remove the PIN; passwords unlock automatically again |
+| `vault lock` / `vault unlock` | With a PIN: lock now / enter the PIN now |
+| `vault reset` | Erase all saved passwords (profiles and networks are kept; you'll be asked again) |
 
-> **Security notes:** the PIN can't be recovered. Anyone who can read the device's flash can try
-> to guess a short PIN offline, so use 6+ characters (letters and digits) if the device might be
-> lost. Wizard answers (passwords, PINs) are never written to command history, and passwords
-> typed on the `connect`/`ssh`/`sshkey` command lines are masked and not stored.
+> **Security notes:** without a PIN, anyone who can read the device's flash chip can recover the
+> saved passwords (the key is on the same chip); SD card backups can't be decrypted on another
+> device. Set a PIN (6+ characters) if the device might be lost; the PIN can't be recovered.
+> Passwords are never written to command history or logs, and are masked on screen.
 
 ## Storage and Backups
 
@@ -357,12 +445,13 @@ SD card backup: 3 profiles, 2 WiFi networks, 4 trusted servers
 Select [0-4]:
 ```
 
-- **Back up** writes `/pocketssh/settings.dat` and `/pocketssh/vault.dat` to the SD card,
-  replacing an older backup only once the new one is complete. Passwords stay encrypted with
-  your master PIN; the backup contains no readable secrets.
-- **Restore** replaces the device's settings with the backup (after confirming). Saved
-  passwords then use the PIN that was set when the backup was made. A damaged or tampered
-  backup is rejected without changing anything.
+- **Back up** writes `/pocketssh/settings.dat` to the SD card, replacing an older backup only
+  once the new one is complete. Saved passwords are included only in encrypted form; the
+  device's own key is never copied, so they can't be read from the card.
+- **Restore** replaces the device's settings with the backup (after confirming). On the same
+  device (or with a PIN) saved passwords keep working; restored onto a different device
+  without a PIN, the networks and profiles come back and their passwords are asked for once.
+  A damaged or tampered backup is rejected without changing anything.
 - **Load SSH keys** reads new `.pem` files from `/ssh_keys` without restarting.
 - **Erase** removes all profiles, networks, trusted servers, history and saved passwords
   from the device (the SD card backup is kept).
@@ -401,16 +490,18 @@ These run on the device (they are not sent to the SSH server):
 
 | Command | What it does |
 |---|---|
+| `menu` | Home menu (1-5 work as shortcuts anytime) |
+| `chat` | ChatGPT (see [ChatGPT](#chatgpt)) |
 | `wifi` / `connect` | WiFi wizard (see [WiFi Wizard](#wifi-wizard)) |
 | `connect <SSID> <PASS>` | Connect to WiFi directly (quotes for spaces) |
 | `disconnect` | Turn WiFi off |
 | `profile` | SSH profiles wizard (see [Connection Profiles Wizard](#connection-profiles-wizard)) |
 | `ssh <HOST> <PORT> <USER> <PASS>` | SSH with a password, without a profile |
 | `sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]` | SSH with an SD card key, without a profile |
-| `vault` | Master PIN and saved passwords (see [above](#saved-passwords-and-the-master-pin)) |
+| `vault` | Saved passwords and the optional PIN (see [above](#saved-passwords)) |
 | `hosts` | Trusted server keys (see [Server Keys](#server-keys-known-hosts)) |
 | `storage` | What is saved; SD card backup/restore; load keys (see [Storage](#storage-and-backups)) |
-| `exit` | Close the SSH session |
+| `exit` | Close the SSH session and return to the menu |
 | `clear` | Clear the screen |
 | `help` | Show the command list |
 
@@ -473,8 +564,7 @@ sshkey 192.168.1.100 22 pi rpi_key.pem
 │   ├── backup_server.pem    ← Backup server
 │   └── dev_machine.pem      ← Development box
 └── pocketssh/               ← created by 'storage' backups
-    ├── settings.dat
-    └── vault.dat
+    └── settings.dat
 ```
 
 ### Key Management
@@ -729,8 +819,8 @@ Disconnected from SSH server
 - Uses SSH2 protocol with encryption
 - Public key authentication, including passphrase-protected keys
 - Saved WiFi passwords, SSH passwords and key passphrases are encrypted at rest
-  (AES-256-GCM, key wrapped under a PBKDF2-derived master PIN key; see
-  [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin))
+  (AES-256-GCM; the key is unique to the device, optionally protected by a PIN; see
+  [Saved Passwords](#saved-passwords))
 - Private keys are read from the SD card into memory only; they are not copied to flash
 
 - SSH host keys verified with trust on first use (see [Server Keys](#server-keys-known-hosts))
@@ -740,7 +830,8 @@ Disconnected from SSH server
 **Security Notes:**
 - See [SECURITY.md](SECURITY.md) for the security review, threat model and residual risks
 - Flash is not encrypted: profiles, known hosts and command history (non-secret) are readable by
-  anyone with physical access to the flash chip. Passwords are protected by the vault PIN
+  anyone with physical access to the flash chip. Saved passwords are only protected from that
+  if you set a PIN (`vault pin`)
 - **Recommended for production**: enable ESP32 secure boot and flash encryption
 
 ## Memory Requirements
@@ -775,8 +866,10 @@ Disconnected from SSH server
 
 ### WiFi Connection Issues
 - Use `wifi` then *Scan and connect* to check the network is visible and pick it from the list
-- Auto-connect needs the network saved (`wifi list`) and in range; if you skip the PIN at boot,
-  networks with saved passwords are not tried
+- `wifi list` shows what is saved; any network you've connected to is there. The boot screen
+  also shows "Saved on this device: N WiFi networks"
+- Auto-connect retries in the background; after `wifi off` / `disconnect` it waits until you
+  connect again. With a PIN set, the PIN must be entered after a restart
 - Check SSID and password are correct (use quotes if they contain spaces)
 - Verify WiFi router is in range
 - Ensure WPA2-PSK authentication is supported

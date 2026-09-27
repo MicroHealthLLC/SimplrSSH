@@ -1,8 +1,9 @@
 # Security
 
 PocketSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3). Its job is to join a
-WiFi network the user picks and open SSH sessions to servers the user enters. It should talk
-to nothing else.
+WiFi network the user picks, open SSH sessions to servers the user enters, and - only when
+the user opens ChatGPT with their own API key - talk to api.openai.com. It should talk to
+nothing else.
 
 ## Reporting a vulnerability
 
@@ -13,9 +14,11 @@ vulnerability") rather than a public issue.
 
 | Asset | Protected against | How |
 |---|---|---|
-| SSH / WiFi passwords, key passphrases at rest | Reading the flash chip or config | AES-256-GCM vault, key wrapped under a PBKDF2 (20k iterations) master-PIN key; PIN never stored |
+| SSH / WiFi passwords, key passphrases at rest | Leaking through backups, logs or plain-text config | AES-256-GCM vault in NVS; data key wrapped with a random per-device secret that is never backed up. With the optional PIN, also against reading the flash chip (PBKDF2 20k iterations; PIN never stored) |
 | SSH session | Network attacker impersonating the server (MITM) | Host key fingerprints, trust on first use, changed keys refused |
 | Secrets in use | Shoulder surfing, serial logs, command history | Masked input and echo, no secret logging, secrets kept out of history, buffers wiped after use |
+| OpenAI API key | Leaking through backups, logs or plain text | Stored in the vault like other passwords (PIN-protected if set); sent only to api.openai.com over TLS verified with the ESP-IDF CA bundle |
+| Chat content and voice | Unexpected destinations | Sent only to OpenAI, only while the user is in ChatGPT; the chat stays in RAM (not saved); recordings are freed after transcription |
 | Device | Unexpected network exposure | Station-only WiFi (no access point / DHCP server), IPv4 only, no listening sockets, no telemetry/OTA/cloud |
 
 Not in scope: an attacker with physical access *and* time to brute-force a short PIN offline
@@ -63,6 +66,16 @@ A full sweep for malicious code, unexpected data flows and vulnerabilities.
 |---|---|
 | The WiFi driver stored its own plain-text copy of the WiFi password in NVS | `CONFIG_ESP_WIFI_NVS_ENABLED` off; networks are saved by the app with the password in the vault |
 | SD card backups could carry secrets or be tampered with | Backups hold only non-secret settings plus the already-encrypted vault files; restore accepts only known namespaces, NVS-sized keys/values and vault file names (no paths), and validates the whole backup before changing anything |
+
+### Usability change (2026-09-27)
+
+Requiring a master PIN before any password could be saved meant networks silently weren't
+saved when the PIN step was skipped, and every restart stopped at a PIN prompt. Saved
+passwords now default to a random per-device key (automatic unlock, WiFi reconnects on its
+own); the PIN is optional. Trade-off: **without a PIN, someone with the device and a flash
+reader can recover saved passwords**, since the key is on the same chip. SD card backups
+remain unreadable elsewhere (the device key is never exported). Set a PIN, or enable flash
+encryption, for devices that may be lost.
 
 ### Known residual risks
 

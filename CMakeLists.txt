@@ -9,7 +9,7 @@ cmake_minimum_required(VERSION 3.16)
 if(DEFINED ENV{FIRMWARE_VERSION})
     set(PROJECT_VER "$ENV{FIRMWARE_VERSION}")
 else()
-    set(PROJECT_VER "1.3.0")
+    set(PROJECT_VER "1.4.0")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

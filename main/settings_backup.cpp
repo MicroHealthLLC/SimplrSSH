@@ -5,12 +5,15 @@
  *   POCKETSSH-BACKUP 1 <profiles> <networks> <hosts> <history>
  *   <namespace> <key> s <hex string value>
  *   <namespace> <key> u <decimal u32 value>
- * vault.dat:
- *   "PSVB" | count (u32 LE) | { name length (u8) | name | size (u32 LE) | bytes } ...
+ *   <namespace> <key> b <hex blob>            (encrypted vault records)
+ *
+ * Saved passwords are copied as the encrypted "vault" records. The per-device
+ * secret that unlocks them ("vault_dev") is never backed up, so without a PIN a
+ * backup's passwords only work on the device that made it.
  *
  * The backup comes from removable media, so restore treats it as untrusted:
- * only known namespaces, NVS-sized keys and values, and vault file names are
- * accepted, and everything is parsed before the device is modified.
+ * only known namespaces, NVS-sized keys and values are accepted, and the whole
+ * file is parsed before the device is modified.
  */
 
 #include "settings_backup.hpp"
@@ -26,17 +29,17 @@
 
 static const char *TAG = "BACKUP";
 
-static const char* const NAMESPACES[] = {"profiles", "wifi_nets", "known_hosts", "storage"};
+static const char* const NAMESPACES[] = {"profiles", "wifi_nets", "known_hosts", "storage", "vault", "chat"};
 static const char* const HEADER = "POCKETSSH-BACKUP 1";
 static const size_t MAX_LINE = 8300;     // "ns key s " + hex of a 4000-byte string
 static const size_t MAX_RECORDS = 1000;
-static const size_t MAX_VAULT_FILES = 64;
+static const size_t MAX_BLOB = 1024;
 
 struct Record {
     std::string ns;
     std::string key;
-    char type;           // 's' or 'u'
-    std::string value;   // String value, or decimal for 'u'
+    char type;           // 's' string, 'u' u32, 'b' blob
+    std::string value;   // String / blob bytes, or decimal for 'u'
 };
 
 static bool known_namespace(const std::string& ns)
@@ -74,7 +77,7 @@ static std::string to_hex(const std::string& s)
     return out;
 }
 
-static bool from_hex(const std::string& hex, std::string& out)
+static bool from_hex(const std::string& hex, std::string& out, bool allow_nul = false)
 {
     if (hex.size() % 2 != 0) {
         return false;
@@ -85,7 +88,7 @@ static bool from_hex(const std::string& hex, std::string& out)
             return false;
         }
         char c = (char)strtol(hex.substr(i, 2).c_str(), NULL, 16);
-        if (c == '\0') {
+        if (c == '\0' && !allow_nul) {
             return false;
         }
         out += c;
@@ -115,6 +118,14 @@ static std::vector<Record> read_device_records()
                         records.push_back({ns, info.key, 's', value});
                     }
                 }
+            } else if (info.type == NVS_TYPE_BLOB) {
+                size_t len = 0;
+                if (nvs_get_blob(handle, info.key, NULL, &len) == ESP_OK && len > 0 && len <= MAX_BLOB) {
+                    std::string value(len, '\0');
+                    if (nvs_get_blob(handle, info.key, &value[0], &len) == ESP_OK) {
+                        records.push_back({ns, info.key, 'b', value});
+                    }
+                }
             } else if (info.type == NVS_TYPE_U32) {
                 uint32_t v = 0;
                 if (nvs_get_u32(handle, info.key, &v) == ESP_OK) {
@@ -141,6 +152,8 @@ static settings_backup::Counts count_records(const std::vector<Record>& records)
             c.hosts++;
         } else if (r.ns == "storage" && r.key.rfind("hist_", 0) == 0 && r.key != "hist_count") {
             c.history++;
+        } else if (r.ns == "vault" && r.key[0] == 's') {
+            c.vault_files++;
         }
     }
     return c;
@@ -148,9 +161,7 @@ static settings_backup::Counts count_records(const std::vector<Record>& records)
 
 settings_backup::Counts settings_backup::count_device()
 {
-    Counts c = count_records(read_device_records());
-    c.vault_files = vault::list_files().size();
-    return c;
+    return count_records(read_device_records());
 }
 
 static std::string path_in(const std::string& dir, const char* name)
@@ -173,46 +184,20 @@ esp_err_t settings_backup::backup(const std::string& dir, Counts& counts)
     bool ok = fprintf(f, "%s %d %d %d %d\n", HEADER, counts.profiles, counts.networks,
                       counts.hosts, counts.history) > 0;
     for (const auto& r : records) {
-        std::string value = r.type == 's' ? to_hex(r.value) : r.value;
+        std::string value = r.type == 'u' ? r.value : to_hex(r.value);
         ok = ok && fprintf(f, "%s %s %c %s\n", r.ns.c_str(), r.key.c_str(), r.type, value.c_str()) > 0;
     }
     ok = (fclose(f) == 0) && ok;
 
-    // Vault files are already encrypted with the master PIN; copy them as they are
-    std::vector<std::string> names = vault::list_files();
-    FILE* v = ok ? fopen(path_in(dir, "vault.new").c_str(), "wb") : NULL;
-    ok = ok && v;
-    if (v) {
-        uint32_t count = names.size();
-        uint8_t le[4] = {(uint8_t)count, (uint8_t)(count >> 8), (uint8_t)(count >> 16), (uint8_t)(count >> 24)};
-        ok = fwrite("PSVB", 1, 4, v) == 4 && fwrite(le, 1, 4, v) == 4;
-        for (const auto& name : names) {
-            std::vector<uint8_t> data;
-            if (!ok || vault::read_raw(name, data) != ESP_OK) {
-                ok = false;
-                break;
-            }
-            uint8_t name_len = name.size();
-            uint32_t size = data.size();
-            uint8_t sz[4] = {(uint8_t)size, (uint8_t)(size >> 8), (uint8_t)(size >> 16), (uint8_t)(size >> 24)};
-            ok = fwrite(&name_len, 1, 1, v) == 1 && fwrite(name.data(), 1, name_len, v) == name_len &&
-                 fwrite(sz, 1, 4, v) == 4 && fwrite(data.data(), 1, size, v) == size;
-        }
-        ok = (fclose(v) == 0) && ok;
-    }
-    counts.vault_files = names.size();
-
     if (!ok) {
         remove(path_in(dir, "settings.new").c_str());
-        remove(path_in(dir, "vault.new").c_str());
         return ESP_FAIL;
     }
 
     // Replace the previous backup only once the new one is complete
     remove(path_in(dir, "settings.dat").c_str());
-    remove(path_in(dir, "vault.dat").c_str());
-    if (rename(path_in(dir, "settings.new").c_str(), path_in(dir, "settings.dat").c_str()) != 0 ||
-        rename(path_in(dir, "vault.new").c_str(), path_in(dir, "vault.dat").c_str()) != 0) {
+    remove(path_in(dir, "vault.dat").c_str());  // Older backup format
+    if (rename(path_in(dir, "settings.new").c_str(), path_in(dir, "settings.dat").c_str()) != 0) {
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Backup written: %d profiles, %d networks, %d hosts", counts.profiles, counts.networks, counts.hosts);
@@ -280,6 +265,8 @@ static bool parse_settings(const std::string& path, std::vector<Record>& records
             ok = false;
         } else if (r.type == 's') {
             ok = from_hex(value, r.value) && r.value.size() <= 4000;
+        } else if (r.type == 'b') {
+            ok = from_hex(value, r.value, true) && !r.value.empty() && r.value.size() <= MAX_BLOB;
         } else if (r.type == 'u') {
             ok = !value.empty() && value.size() <= 10 &&
                  value.find_first_not_of("0123456789") == std::string::npos;
@@ -293,50 +280,6 @@ static bool parse_settings(const std::string& path, std::vector<Record>& records
     }
     // A line that was too long or unterminated ends read_line early; treat as corrupt
     ok = ok && feof(f);
-    fclose(f);
-    return ok;
-}
-
-struct VaultFile {
-    std::string name;
-    std::vector<uint8_t> data;
-};
-
-static bool parse_vault(const std::string& path, std::vector<VaultFile>& files)
-{
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) {
-        return false;
-    }
-    auto read_u32 = [f](uint32_t& v) {
-        uint8_t b[4];
-        if (fread(b, 1, 4, f) != 4) {
-            return false;
-        }
-        v = b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24);
-        return true;
-    };
-
-    char magic[4];
-    uint32_t count = 0;
-    bool ok = fread(magic, 1, 4, f) == 4 && memcmp(magic, "PSVB", 4) == 0 && read_u32(count) &&
-              count <= MAX_VAULT_FILES;
-    for (uint32_t i = 0; ok && i < count; i++) {
-        uint8_t name_len = 0;
-        char name[32];
-        uint32_t size = 0;
-        ok = fread(&name_len, 1, 1, f) == 1 && name_len > 0 && name_len < sizeof(name) &&
-             fread(name, 1, name_len, f) == name_len;
-        if (ok) {
-            name[name_len] = '\0';
-            ok = vault::is_vault_file_name(name) && read_u32(size) && size <= 4096;
-        }
-        if (ok) {
-            VaultFile vf{name, std::vector<uint8_t>(size)};
-            ok = fread(vf.data.data(), 1, size, f) == size;
-            files.push_back(std::move(vf));
-        }
-    }
     fclose(f);
     return ok;
 }
@@ -356,9 +299,7 @@ static void erase_namespaces()
 esp_err_t settings_backup::restore(const std::string& dir, Counts& counts)
 {
     std::vector<Record> records;
-    std::vector<VaultFile> files;
-    if (!parse_settings(path_in(dir, "settings.dat"), records) ||
-        !parse_vault(path_in(dir, "vault.dat"), files)) {
+    if (!parse_settings(path_in(dir, "settings.dat"), records)) {
         ESP_LOGE(TAG, "Backup is missing or damaged");
         return ESP_ERR_INVALID_STATE;
     }
@@ -376,6 +317,7 @@ esp_err_t settings_backup::restore(const std::string& dir, Counts& counts)
                 continue;
             }
             esp_err_t err = r.type == 's' ? nvs_set_str(handle, r.key.c_str(), r.value.c_str())
+                          : r.type == 'b' ? nvs_set_blob(handle, r.key.c_str(), r.value.data(), r.value.size())
                                           : nvs_set_u32(handle, r.key.c_str(), strtoul(r.value.c_str(), NULL, 10));
             if (err != ESP_OK) {
                 result = err;
@@ -385,16 +327,8 @@ esp_err_t settings_backup::restore(const std::string& dir, Counts& counts)
         nvs_close(handle);
     }
 
-    vault::reset();
-    for (const auto& vf : files) {
-        if (vault::write_raw(vf.name, vf.data) != ESP_OK) {
-            result = ESP_FAIL;
-        }
-    }
-
     counts = count_records(records);
-    counts.vault_files = files.size();
-    return result;
+    return result;   // The caller re-opens the vault (vault::init) to use the restored passwords
 }
 
 esp_err_t settings_backup::erase_device()
