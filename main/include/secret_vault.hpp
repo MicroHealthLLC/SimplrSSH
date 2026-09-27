@@ -1,51 +1,51 @@
 /*
  * Secret Vault
- * Encrypted storage for saved passwords (SSH passwords, SSH key passphrases and
- * WiFi passwords) as files on the internal "storage" SPIFFS partition.
+ * Encrypted storage for saved passwords (WiFi passwords, SSH passwords and SSH
+ * key passphrases), kept in NVS alongside the other settings.
  *
  * A random 256-bit data key encrypts every secret with AES-256-GCM. The data key
- * itself is stored wrapped (AES-256-GCM) under a key derived from the user's
- * master PIN with PBKDF2-HMAC-SHA256, so the PIN is never stored and changing it
- * only rewrites the small key file.
+ * is stored wrapped (AES-256-GCM) under either
+ *   - a random per-device secret (default): unlocks automatically at boot, so
+ *     saved WiFi reconnects with no prompts; or
+ *   - a key derived from an optional master PIN (PBKDF2-HMAC-SHA256): the PIN is
+ *     asked once per boot and never stored.
+ * The device secret lives in its own NVS namespace that is never included in SD
+ * card backups, so a backup's passwords can't be decrypted on another device
+ * unless a PIN is set.
  */
 
 #ifndef SECRET_VAULT_HPP
 #define SECRET_VAULT_HPP
 
 #include "esp_err.h"
-#include <cstdint>
 #include <string>
-#include <vector>
 
 #define VAULT_MIN_PIN_LENGTH 4
 
 namespace vault
 {
-    // Mounts the storage partition (formatting it if it has never been used)
-    esp_err_t init(const char* base_path = "/spiffs", const char* partition_label = "storage");
+    // Opens the vault, creating it on first use and unlocking it automatically
+    // when no PIN is set. Returns true if it had to discard passwords it couldn't
+    // decrypt (e.g. a backup restored from another device without a PIN).
+    bool init();
 
-    bool is_mounted();
-    bool is_set_up();       // A master PIN has been created
-    bool is_unlocked();     // The data key is in memory
+    bool is_available();    // NVS usable
+    bool has_pin();         // A master PIN protects the vault
+    bool is_unlocked();
 
-    esp_err_t setup(const std::string& pin);   // Create the vault; leaves it unlocked
-    esp_err_t unlock(const std::string& pin);  // ESP_ERR_INVALID_ARG for a wrong PIN
-    void lock();
+    esp_err_t unlock(const std::string& pin);   // ESP_ERR_INVALID_ARG for a wrong PIN
+    void lock();                                 // Only meaningful with a PIN
+    esp_err_t set_pin(const std::string& pin);   // Vault must be unlocked
     esp_err_t change_pin(const std::string& old_pin, const std::string& new_pin);
-    esp_err_t reset();                          // Delete every secret and the PIN
+    esp_err_t remove_pin(const std::string& pin);
+    esp_err_t reset();                            // Delete every saved password; no PIN
 
     // Secrets are addressed by id, e.g. "wifi:HomeNet" or "profile:1a2b3c4d"
     esp_err_t put(const std::string& id, const std::string& secret);
     esp_err_t get(const std::string& id, std::string& secret);
     esp_err_t remove(const std::string& id);
     bool has(const std::string& id);
-
-    // Raw access to the (already encrypted) vault files, for SD card backup/restore.
-    // Only vault file names are accepted ("vault.key", "s<16 hex>.enc").
-    bool is_vault_file_name(const std::string& name);
-    std::vector<std::string> list_files();
-    esp_err_t read_raw(const std::string& name, std::vector<uint8_t>& data);
-    esp_err_t write_raw(const std::string& name, const std::vector<uint8_t>& data);
+    int count();
 
     // Best-effort overwrite of a plaintext secret before it is released
     void wipe(std::string& s);

@@ -8,6 +8,7 @@
 #include "ssh_terminal.hpp"
 #include "secret_vault.hpp"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include <cctype>
 #include <cstdlib>
 #include <algorithm>
@@ -208,133 +209,164 @@ void SSHTerminal::wifi_connect_with(const std::string& password, bool from_vault
     }
 
     append_text(("Connected to " + ssid + ".\n").c_str());
-
-    int saved = find_ssid(saved_networks, ssid);
-    bool up_to_date = saved >= 0 && (from_vault || (password.empty() && !saved_networks[saved].secret_saved));
-    if (up_to_date) {
-        wizard_reset();
-        return;
+    // Every network that connects is saved (already saved with this password: nothing to do)
+    if (!(from_vault && find_ssid(saved_networks, ssid) >= 0)) {
+        wifi_remember_network(ssid, password, wizard.wifi_hidden);
     }
-
-    vault::wipe(wizard.secret);
-    wizard.secret = password;
-    wizard_goto(WizardStep::WifiSave);
+    wizard_reset();
 }
 
-void SSHTerminal::wifi_remember_network()
+// Saves a network that just connected, most recent first, so it reconnects after a restart
+void SSHTerminal::wifi_remember_network(const std::string& ssid, const std::string& password, bool hidden)
 {
-    int existing = find_ssid(saved_networks, wizard.wifi_ssid);
-    if (existing < 0 && saved_networks.size() >= NETWORK_MAX_COUNT) {
-        append_text("Saved network limit reached. Use 'wifi forget' first.\n");
-        wizard_reset();
-        return;
-    }
+    SavedNetwork n;
+    n.ssid = ssid;
+    int existing = find_ssid(saved_networks, ssid);
+    n.hidden = hidden || (existing >= 0 && saved_networks[existing].hidden);
 
-    auto store = [this]() {
-        SavedNetwork n;
-        n.ssid = wizard.wifi_ssid;
-        if (wizard.secret.empty()) {
-            vault::remove(n.secret_id());
-        } else if (vault::put(n.secret_id(), wizard.secret) == ESP_OK) {
-            n.secret_saved = true;
-        } else {
-            append_text("ERROR: Could not store the password.\n");
-            wizard_reset();
-            return;
-        }
-
-        int i = find_ssid(saved_networks, n.ssid);
-        if (i >= 0) {
-            saved_networks[i] = n;
-        } else {
-            saved_networks.push_back(n);
-        }
-        if (network_store::save(saved_networks) == ESP_OK) {
-            append_text(("Saved " + n.ssid + (n.secret_saved ? " (password encrypted).\n" : ".\n")).c_str());
-        } else {
-            append_text("ERROR: Failed to save networks to flash.\n");
-        }
-        wizard_reset();
-    };
-
-    if (wizard.secret.empty()) {
-        store();
+    bool password_saved = true;
+    if (password.empty()) {
+        vault::remove(n.secret_id());
+    } else if (vault::is_unlocked() && vault::put(n.secret_id(), password) == ESP_OK) {
+        n.secret_saved = true;
     } else {
-        with_vault(store);
+        password_saved = false;  // Only possible when a PIN is set and not entered yet
+    }
+
+    if (existing >= 0) {
+        saved_networks.erase(saved_networks.begin() + existing);
+    }
+    saved_networks.insert(saved_networks.begin(), n);
+    while (saved_networks.size() > NETWORK_MAX_COUNT) {
+        vault::remove(saved_networks.back().secret_id());  // Forget the least recently used
+        saved_networks.pop_back();
+    }
+
+    if (network_store::save(saved_networks) != ESP_OK) {
+        append_text("ERROR: Could not save the network to the device's storage.\n");
+    } else if (!password_saved) {
+        append_text(("Saved " + ssid + ". Its password wasn't saved because your PIN hasn't\n"
+                     "been entered ('vault unlock'), so it will be asked next time.\n").c_str());
+    } else {
+        append_text(("Saved " + ssid + " on this device - it will reconnect automatically.\n").c_str());
     }
 }
 
-// Joins the strongest saved network in range; called once after boot
-void SSHTerminal::wifi_auto_connect()
+// Joins the strongest saved network in range (then saved hidden networks).
+// quiet: background retry - no output unless it connects, and no PIN prompt.
+bool SSHTerminal::wifi_auto_connect(bool quiet)
 {
-    if (saved_networks.empty() || wifi_connected) {
-        return;
+    if (wifi_connected || saved_networks.empty()) {
+        return wifi_connected;
     }
-
-    append_text("Looking for saved WiFi networks...\n");
-    refresh_display_now();
+    if (!quiet) {
+        append_text("Looking for saved WiFi networks...\n");
+        refresh_display_now();
+    }
 
     std::vector<WifiScanResult> results;
     if (scan_wifi(results) != ESP_OK) {
-        append_text("WiFi scan failed. Type 'wifi' to connect.\n");
-        return;
+        if (!quiet) {
+            append_text("WiFi scan failed. Type 'wifi' to connect.\n");
+        }
+        return false;
     }
 
-    // Scan results are strongest first
+    // In range, strongest first; then hidden networks, which scans don't list
     std::vector<WifiScanResult> candidates;
-    bool needs_pin = false;
     for (const auto& r : results) {
-        int i = find_ssid(saved_networks, r.ssid);
-        if (i >= 0) {
+        if (find_ssid(saved_networks, r.ssid) >= 0) {
             candidates.push_back(r);
-            needs_pin = needs_pin || saved_networks[i].secret_saved;
+        }
+    }
+    for (const auto& n : saved_networks) {
+        if (n.hidden && n.secret_saved && std::none_of(candidates.begin(), candidates.end(),
+                                     [&](const WifiScanResult& c) { return c.ssid == n.ssid; })) {
+            candidates.push_back({n.ssid, -100, false});
         }
     }
     if (candidates.empty()) {
-        append_text("No saved WiFi network in range. Type 'wifi' to choose one.\n");
-        return;
+        if (!quiet) {
+            append_text("No saved WiFi network in range yet - will keep trying in the background.\n");
+        }
+        return false;
     }
 
-    wizard_reset();
-    wizard.scan = candidates;
+    bool needs_pin = !vault::is_unlocked() &&
+                     std::any_of(candidates.begin(), candidates.end(), [&](const WifiScanResult& c) {
+                         return saved_networks[find_ssid(saved_networks, c.ssid)].secret_saved;
+                     });
+    if (needs_pin && quiet) {
+        return false;  // Background retries never prompt
+    }
 
-    auto attempt = [this]() {
-        std::vector<WifiScanResult> in_range = wizard.scan;
-        wizard_reset();
-        for (const auto& c : in_range) {
+    auto attempt = [this, quiet](const std::vector<WifiScanResult>& list) {
+        for (const auto& c : list) {
             int i = find_ssid(saved_networks, c.ssid);
             std::string password;
             if (i < 0 || (!saved_networks[i].secret_saved && !c.open)) {
                 continue;  // Locked network without a saved password
             }
-            if (saved_networks[i].secret_saved &&
-                (!vault::is_unlocked() || vault::get(saved_networks[i].secret_id(), password) != ESP_OK)) {
+            if (saved_networks[i].secret_saved && vault::get(saved_networks[i].secret_id(), password) != ESP_OK) {
                 continue;
             }
-            append_text(("Auto-connecting to " + c.ssid + "...\n").c_str());
-            refresh_display_now();
+            if (!quiet) {
+                append_text(("Connecting to " + c.ssid + "...\n").c_str());
+                refresh_display_now();
+            }
+            wifi_quiet_connect = quiet;
             esp_err_t err = init_wifi(c.ssid.c_str(), password.c_str());
+            wifi_quiet_connect = false;
             vault::wipe(password);
             if (err == ESP_OK) {
-                append_text(("Connected to " + c.ssid + ". Type 'profile' to connect SSH.\n").c_str());
-                return;
+                append_text(("WiFi connected: " + c.ssid + "\n").c_str());
+                return true;
             }
             ESP_LOGW(TAG, "Auto-connect to %s failed", c.ssid.c_str());
         }
-        append_text("Auto-connect failed. Type 'wifi' to choose a network.\n");
+        if (!quiet) {
+            append_text("Couldn't join a saved network yet - will keep trying in the background.\n");
+        }
+        return false;
     };
 
-    if (needs_pin && !vault::is_unlocked() && vault::is_set_up()) {
-        append_text("Enter your PIN to auto-connect to saved WiFi.\n");
-        with_vault(attempt);
-    } else {
-        attempt();
+    if (needs_pin) {
+        append_text("Enter your PIN to connect to saved WiFi.\n");
+        wizard_reset();
+        wizard.scan = candidates;
+        with_vault([this, attempt]() {
+            std::vector<WifiScanResult> list = wizard.scan;
+            wizard_reset();
+            attempt(list);
+        });
+        return false;
     }
+    return attempt(candidates);
 }
 
 void SSHTerminal::run_startup_tasks()
 {
-    wifi_auto_connect();
+    wifi_next_retry_ms = esp_timer_get_time() / 1000 + 30000;
+    wifi_auto_connect(false);
+}
+
+// Reconnects saved WiFi in the background while it is down: 30 s, then backing off to 5 min.
+// Waits until the user has been idle for a few seconds, since a scan briefly pauses input.
+void SSHTerminal::wifi_maintain()
+{
+    int64_t now = esp_timer_get_time() / 1000;
+    if (wifi_connected) {
+        wifi_retry_delay_s = 0;
+        return;
+    }
+    if (!wifi_auto_enabled || saved_networks.empty() || wizard_active() || session ||
+        now < wifi_next_retry_ms || now - last_input_ms < 5000) {
+        return;
+    }
+    if (!wifi_auto_connect(true)) {
+        wifi_retry_delay_s = wifi_retry_delay_s ? std::min(wifi_retry_delay_s * 2, 300) : 30;
+        wifi_next_retry_ms = esp_timer_get_time() / 1000 + wifi_retry_delay_s * 1000;
+    }
 }
 
 bool SSHTerminal::wifi_step_prompt()
@@ -393,13 +425,6 @@ bool SSHTerminal::wifi_step_prompt()
         case WizardStep::WifiPassword:
             text = "Password for " + wizard.wifi_ssid +
                    (wizard.wifi_hidden ? " (Enter = open network): " : " (Enter = back): ");
-            break;
-
-        case WizardStep::WifiSave:
-            text = find_ssid(saved_networks, wizard.wifi_ssid) >= 0
-                 ? "Update saved password for " + wizard.wifi_ssid + "? (y/n) [y]: "
-                 : "Save " + wizard.wifi_ssid + " so it auto-connects? (y/n) [y]: ";
-            wizard.choices = {"y", "n"};
             break;
 
         case WizardStep::WifiPickSaved:
@@ -493,14 +518,6 @@ bool SSHTerminal::wifi_step_input(const std::string& raw_input, const std::strin
                 std::string password = raw_input;
                 wifi_connect_with(password, false);
                 vault::wipe(password);
-            }
-            break;
-
-        case WizardStep::WifiSave:
-            if (is_yes(input, true)) {
-                wifi_remember_network();
-            } else {
-                wizard_reset();
             }
             break;
 

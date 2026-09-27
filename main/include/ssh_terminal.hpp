@@ -49,6 +49,10 @@ public:
     
     // Runs once after boot, from the input task (WiFi auto-connect)
     void run_startup_tasks();
+    // Called regularly from the input task: reconnects saved WiFi when it is down
+    void wifi_maintain();
+    // Boot message listing what was restored from the device's storage
+    void print_saved_summary();
     
     void update_status_bar();
     
@@ -66,7 +70,7 @@ private:
         MainMenu, PickProfile, Name, Host, Port, User, AuthMethod, PickKey,
         Password, KeyPassphrase, Review, ConfirmDelete, ConnectSecret,
         // WiFi
-        WifiMenu, WifiPickScan, WifiHiddenSsid, WifiPassword, WifiSave,
+        WifiMenu, WifiPickScan, WifiHiddenSsid, WifiPassword,
         WifiPickSaved, WifiConfirmForget,
         // Vault (master PIN)
         VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset,
@@ -75,7 +79,7 @@ private:
         // Storage / SD card backup (storage_menu.cpp)
         StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase
     };
-    enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, ChangePin };
+    enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, SetPin, ChangePin, RemovePin };
     enum class SecretChange { Keep, Set, Clear };
     struct WifiScanResult {
         std::string ssid;
@@ -163,6 +167,12 @@ private:
     std::vector<SavedNetwork> saved_networks;
     std::string wifi_ssid;
     ProfileWizard wizard;
+    bool vault_was_reset = false;      // Passwords from another device were discarded at boot
+    bool wifi_auto_enabled = true;     // Off after the user disconnects WiFi on purpose
+    int64_t wifi_next_retry_ms = 0;    // When wifi_maintain() may try again
+    int wifi_retry_delay_s = 0;
+    int64_t last_input_ms = 0;         // Background reconnects wait until the user is idle
+    bool wifi_quiet_connect = false;   // Background reconnect: no progress dots
     
     void update_input_display();
     void process_received_data(const char* data, size_t len);
@@ -226,8 +236,8 @@ private:
     void wifi_scan_and_pick();
     void wifi_choose_network(const std::string& ssid, bool open);
     void wifi_connect_with(const std::string& password, bool from_vault);
-    void wifi_remember_network();
-    void wifi_auto_connect();
+    void wifi_remember_network(const std::string& ssid, const std::string& password, bool hidden);
+    bool wifi_auto_connect(bool quiet);
     bool wifi_step_prompt();
     bool wifi_step_input(const std::string& raw, const std::string& input);
     

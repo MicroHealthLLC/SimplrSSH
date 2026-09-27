@@ -84,9 +84,12 @@ SSHTerminal::SSHTerminal()
     }
     
     load_history_from_nvs();
-    vault::init();
+    vault_was_reset = vault::init();
     profiles = profile_store::load();
     saved_networks = network_store::load();
+    if (vault_was_reset) {
+        clear_all_saved_secret_flags();  // Those passwords are gone; ask for them again
+    }
 }
 
 SSHTerminal::~SSHTerminal() 
@@ -220,6 +223,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
             ESP_LOGI(TAG, "Connected to AP SSID:%s", ssid);
             wifi_connected = true;
             wifi_ssid = ssid;
+            wifi_auto_enabled = true;
             
             if (bsp_display_lock(0)) {
                 update_status_bar();
@@ -231,7 +235,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
             break;
         }
         
-        if (bsp_display_lock(0)) {
+        if (!wifi_quiet_connect && bsp_display_lock(0)) {
             append_text(".");
             refresh_display_now();
             bsp_display_unlock();
@@ -255,6 +259,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
 
 void SSHTerminal::disconnect_wifi()
 {
+    wifi_auto_enabled = false;  // Stay off until the user connects again
     if (wifi_connected) {
         append_text("Disconnecting WiFi...\n");
         s_connect_requested = false;
@@ -269,6 +274,18 @@ void SSHTerminal::disconnect_wifi()
 }
 
 // Called from the WiFi event task when an established connection is gone for good
+void SSHTerminal::print_saved_summary()
+{
+    std::string line = "Saved on this device: " + std::to_string(saved_networks.size()) + " WiFi network" +
+                       (saved_networks.size() == 1 ? "" : "s") + ", " + std::to_string(profiles.size()) +
+                       " SSH profile" + (profiles.size() == 1 ? "" : "s") + "\n";
+    append_text(line.c_str());
+    if (vault_was_reset) {
+        append_text("Saved passwords from another device couldn't be used here; they'll be\n"
+                    "asked for once and saved again.\n");
+    }
+}
+
 void SSHTerminal::wifi_link_lost()
 {
     if (!wifi_connected) {
@@ -276,8 +293,11 @@ void SSHTerminal::wifi_link_lost()
     }
     wifi_connected = false;
     wifi_ssid.clear();
+    // wifi_maintain() reconnects to a saved network shortly
+    wifi_retry_delay_s = 0;
+    wifi_next_retry_ms = esp_timer_get_time() / 1000 + 5000;
     if (bsp_display_lock(0)) {
-        append_text("\nWiFi connection lost. Type 'wifi' to reconnect.\n");
+        append_text("\nWiFi connection lost - reconnecting automatically...\n");
         update_status_bar();
         bsp_display_unlock();
     }
@@ -521,6 +541,8 @@ static std::string redact_secrets(const std::string& cmd, bool* has_secret)
 
 void SSHTerminal::handle_key_input(char key)
 {
+    last_input_ms = esp_timer_get_time() / 1000;
+
     if (wizard_active() && (key == '\n' || key == '\r')) {
         // Wizard answers are never added to command history (they may be passwords)
         std::string answer = current_input;
@@ -591,11 +613,7 @@ void SSHTerminal::handle_key_input(char key)
                     
                     if (init_wifi(ssid.c_str(), password.c_str()) == ESP_OK) {
                         append_text("WiFi connected successfully!\n");
-                        // Offer to keep it, so it reconnects after a restart
-                        wizard_reset();
-                        wizard.wifi_ssid = ssid;
-                        wizard.secret = password;
-                        wizard_goto(WizardStep::WifiSave);
+                        wifi_remember_network(ssid, password, false);
                     } else {
                         append_text("WiFi connection failed!\n");
                     }

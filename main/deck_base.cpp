@@ -51,11 +51,10 @@ static QueueHandle_t input_events = NULL;
 void keypad_task(void *param)
 {
     C3Keyboard keyboard(i2c_handle);
-    if (keyboard.init() != ESP_OK)
-    {
+    // Keep running without the keyboard: this task also runs WiFi auto-connect and trackball input
+    bool keyboard_ok = keyboard.init() == ESP_OK;
+    if (!keyboard_ok) {
         ESP_LOGE("KEYPAD", "Failed to initialize keypad!");
-        vTaskDelete(NULL);
-        return;
     }
 
     bool startup_pending = true;
@@ -70,7 +69,7 @@ void keypad_task(void *param)
         }
 
         // Non-blocking display lock: keep rendering responsive, drop input if the display is busy
-        uint32_t key = keyboard.get_key();
+        uint32_t key = keyboard_ok ? keyboard.get_key() : 0;
         if (key && bsp_display_lock(0)) {
             ssh_terminal->handle_key_input((char)key);
             bsp_display_unlock();
@@ -87,6 +86,12 @@ void keypad_task(void *param)
                 case INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
                 case INPUT_DELETE: ssh_terminal->delete_current_history_entry(); break;
             }
+            bsp_display_unlock();
+        }
+
+        // Reconnect saved WiFi in the background when it is down
+        if (bsp_display_lock(0)) {
+            ssh_terminal->wifi_maintain();
             bsp_display_unlock();
         }
 
@@ -279,6 +284,8 @@ extern "C" void app_main(void)
 #else
     ssh_terminal->append_text("PocketSSH Terminal Ready\n");
 #endif
+
+    ssh_terminal->print_saved_summary();
 
     // Display loaded SSH keys
     auto loaded_keys = ssh_terminal->get_loaded_key_names();

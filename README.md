@@ -32,6 +32,20 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
+### v1.3.2 (September 27, 2026)
+- **Fixed**: WiFi networks now always save. Every network you connect to (with the `wifi` menu
+  or `connect <SSID> <PASSWORD>`) is saved on the device right away, with its password
+  encrypted - no questions, no PIN, no SD card. Previously saving required creating a PIN, and
+  skipping that step silently saved nothing
+- **Fixed**: After a restart the device reconnects to your saved WiFi by itself, with no PIN
+  prompt. If WiFi drops or you're out of range, it keeps reconnecting in the background
+- **Added**: Hidden networks auto-connect too; up to 20 networks are remembered (most recent first)
+- **Changed**: Saved passwords are encrypted with a key unique to this device and unlock
+  automatically. A master PIN is now optional (`vault pin`), for extra protection
+- **Changed**: Saved passwords live in the same built-in settings storage as everything else
+  (the separate SPIFFS partition is gone, which also removes a slow first-boot format)
+- **Improved**: The boot screen shows what is saved ("Saved on this device: 2 WiFi networks, ...")
+
 ### v1.3.0 (September 26, 2026)
 - **Fixed**: Settings no longer disappear. Saved networks, profiles, trusted servers and
   history live in a larger (256 KB) settings area placed after the app, so flashing a new
@@ -175,9 +189,9 @@ Everything is menu driven: type a command, then answer each prompt by typing a n
 and pressing Enter. You can also **roll the trackball** to cycle through the numbered choices and
 **press it** to confirm. Type `cancel` (or tap Esc in the special keys panel) at any prompt to back out.
 
-1. **Connect to WiFi** - type `wifi` and choose *Scan and connect*, pick your network, enter the
-   password, and answer `y` to save it. The first time you save a password you'll create a
-   **master PIN** that encrypts it (see [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin)).
+1. **Connect to WiFi** - type `wifi` and choose *Scan and connect*, pick your network and enter
+   the password. That's it: the network is saved on the device (password encrypted) and it
+   reconnects automatically from now on.
 
 2. **Save an SSH server** - type `profile`, choose *Add*, and fill in name, host, port and user.
    Pick an SSH key from the list of keys on the SD card, or choose password login.
@@ -195,9 +209,9 @@ and pressing Enter. You can also **roll the trackball** to cycle through the num
 5. **Disconnect** - type `exit` (or use *Exit SSH* in the special keys panel) to close SSH;
    `disconnect` turns WiFi off.
 
-On later boots the device **auto-connects to the strongest saved WiFi network in range** once
-it boots (it asks for your PIN first if that network's password is saved).
-Then just type `profile` and pick a server.
+From then on the device **connects to the strongest saved WiFi network in range by itself**
+every time it starts, and reconnects if WiFi drops. No SD card is needed - everything is
+saved on the device. Then just type `profile` and pick a server.
 
 ## WiFi Wizard
 
@@ -224,21 +238,24 @@ Select [1-5, 0=back]: 2
 Password for HomeNet (Enter = back): ********
 Connecting to HomeNet...
 Connected to HomeNet.
-Save HomeNet so it auto-connects? (y/n) [y]: y
-Saved HomeNet (password encrypted).
+Saved HomeNet on this device - it will reconnect automatically.
 ```
 
 - **Signal bars**: `####` excellent, `###` good, `##` fair, `#` weak. `open` = no password,
   `saved` = already saved, `connected` = the current network.
-- **Saved networks** connect without asking for the password (the PIN is asked once if the vault is locked).
+- **Every network that connects is saved** automatically (password encrypted on the device) and
+  connects without asking again. Remove one with `wifi forget`.
 - **Wrong password?** You're asked again; press Enter on an empty password to go back.
 - **Switching networks**: pick a different network from *Scan and connect* or *Connect to saved
   network* at any time. Close SSH first (`exit`), since changing WiFi drops the session.
 - **Hidden networks**: choose *Hidden network...* and type the SSID.
-- **Auto-connect**: at boot the device scans and joins the strongest saved network in range,
-  falling back to the next one if that fails. Up to 10 networks can be saved.
-- The one-line form still works: `connect <SSID> <PASSWORD>` (use quotes for spaces:
-  `connect "My WiFi" "my pass"`). After connecting it offers to save the network.
+- **Auto-connect**: at boot the device joins the strongest saved network in range (then saved
+  hidden networks), falling back to the next one if that fails. If WiFi drops or no saved
+  network is in range, it keeps trying quietly in the background (after 30 s, then less often,
+  up to every 5 minutes). `wifi off` / `disconnect` pauses this until you connect again.
+- Up to 20 networks are remembered; connecting to a 21st forgets the one used least recently.
+- The one-line form works too: `connect <SSID> <PASSWORD>` (use quotes for spaces:
+  `connect "My WiFi" "my pass"`), and saves the network the same way.
 
 | Command | What it does |
 |---|---|
@@ -303,35 +320,32 @@ Select [1]: 2
 | `profile edit [NAME or #]` | Edit a profile |
 | `profile delete [NAME or #]` | Delete a profile and its saved password |
 
-## Saved Passwords and the Master PIN
+## Saved Passwords
 
-WiFi passwords, SSH passwords and SSH key passphrases are **never stored in plain text**. They
-are saved as encrypted files on the device's internal `storage` flash partition:
+WiFi passwords, SSH passwords and SSH key passphrases are **saved encrypted on the device** and
+used automatically - there is nothing to set up.
 
-- Each secret is encrypted with **AES-256-GCM** using a random 256-bit data key.
-- The data key is itself encrypted with a key derived from your **master PIN**
-  (PBKDF2-HMAC-SHA256, 20,000 iterations, random salt). The PIN is never stored.
-- File names are hashes, so SSIDs and server names don't appear on flash either.
-
-**Creating the PIN**: the first time you save a password, you're asked to create a PIN
-(at least 4 characters; longer is stronger) and type it twice.
-
-**Unlocking**: the vault is locked at every boot. The first time a saved password is needed
-(auto-connecting WiFi, or connecting a profile) you're asked for the PIN once; it stays unlocked
-until you reboot or type `vault lock`. Press Enter at the PIN prompt to skip.
+- Each password is encrypted with **AES-256-GCM** using a random 256-bit data key, stored in the
+  device's built-in settings storage (NVS). Record names are hashes, so SSIDs and server names
+  don't appear in them either.
+- By default the data key is wrapped with a random secret unique to this device, so saved
+  passwords **unlock automatically** at boot and WiFi reconnects with no prompts.
+- **Optional master PIN** (`vault pin`): the data key is then wrapped with a key derived from
+  your PIN (PBKDF2-HMAC-SHA256, 20,000 iterations). You enter the PIN once after each restart
+  before saved passwords can be used (WiFi auto-connect asks for it). The PIN is never stored.
 
 | Command | What it does |
 |---|---|
-| `vault` | Show whether a PIN is set and whether the vault is unlocked |
-| `vault unlock` | Enter the PIN now |
-| `vault lock` | Forget the key until the PIN is entered again |
-| `vault pin` | Change the PIN (saved passwords are kept) |
-| `vault reset` | Forgot the PIN? Erase all saved passwords and the PIN. Profiles and networks are kept; you'll be asked for their passwords again |
+| `vault` | How many passwords are saved, and whether a PIN protects them |
+| `vault pin` | Add a PIN (or change it) |
+| `vault nopin` | Remove the PIN; passwords unlock automatically again |
+| `vault lock` / `vault unlock` | With a PIN: lock now / enter the PIN now |
+| `vault reset` | Erase all saved passwords (profiles and networks are kept; you'll be asked again) |
 
-> **Security notes:** the PIN can't be recovered. Anyone who can read the device's flash can try
-> to guess a short PIN offline, so use 6+ characters (letters and digits) if the device might be
-> lost. Wizard answers (passwords, PINs) are never written to command history, and passwords
-> typed on the `connect`/`ssh`/`sshkey` command lines are masked and not stored.
+> **Security notes:** without a PIN, anyone who can read the device's flash chip can recover the
+> saved passwords (the key is on the same chip); SD card backups can't be decrypted on another
+> device. Set a PIN (6+ characters) if the device might be lost; the PIN can't be recovered.
+> Passwords are never written to command history or logs, and are masked on screen.
 
 ## Storage and Backups
 
@@ -357,12 +371,13 @@ SD card backup: 3 profiles, 2 WiFi networks, 4 trusted servers
 Select [0-4]:
 ```
 
-- **Back up** writes `/pocketssh/settings.dat` and `/pocketssh/vault.dat` to the SD card,
-  replacing an older backup only once the new one is complete. Passwords stay encrypted with
-  your master PIN; the backup contains no readable secrets.
-- **Restore** replaces the device's settings with the backup (after confirming). Saved
-  passwords then use the PIN that was set when the backup was made. A damaged or tampered
-  backup is rejected without changing anything.
+- **Back up** writes `/pocketssh/settings.dat` to the SD card, replacing an older backup only
+  once the new one is complete. Saved passwords are included only in encrypted form; the
+  device's own key is never copied, so they can't be read from the card.
+- **Restore** replaces the device's settings with the backup (after confirming). On the same
+  device (or with a PIN) saved passwords keep working; restored onto a different device
+  without a PIN, the networks and profiles come back and their passwords are asked for once.
+  A damaged or tampered backup is rejected without changing anything.
 - **Load SSH keys** reads new `.pem` files from `/ssh_keys` without restarting.
 - **Erase** removes all profiles, networks, trusted servers, history and saved passwords
   from the device (the SD card backup is kept).
@@ -407,7 +422,7 @@ These run on the device (they are not sent to the SSH server):
 | `profile` | SSH profiles wizard (see [Connection Profiles Wizard](#connection-profiles-wizard)) |
 | `ssh <HOST> <PORT> <USER> <PASS>` | SSH with a password, without a profile |
 | `sshkey <HOST> <PORT> <USER> <KEYFILE> [PASSPHRASE]` | SSH with an SD card key, without a profile |
-| `vault` | Master PIN and saved passwords (see [above](#saved-passwords-and-the-master-pin)) |
+| `vault` | Saved passwords and the optional PIN (see [above](#saved-passwords)) |
 | `hosts` | Trusted server keys (see [Server Keys](#server-keys-known-hosts)) |
 | `storage` | What is saved; SD card backup/restore; load keys (see [Storage](#storage-and-backups)) |
 | `exit` | Close the SSH session |
@@ -473,8 +488,7 @@ sshkey 192.168.1.100 22 pi rpi_key.pem
 │   ├── backup_server.pem    ← Backup server
 │   └── dev_machine.pem      ← Development box
 └── pocketssh/               ← created by 'storage' backups
-    ├── settings.dat
-    └── vault.dat
+    └── settings.dat
 ```
 
 ### Key Management
@@ -729,8 +743,8 @@ Disconnected from SSH server
 - Uses SSH2 protocol with encryption
 - Public key authentication, including passphrase-protected keys
 - Saved WiFi passwords, SSH passwords and key passphrases are encrypted at rest
-  (AES-256-GCM, key wrapped under a PBKDF2-derived master PIN key; see
-  [Saved Passwords and the Master PIN](#saved-passwords-and-the-master-pin))
+  (AES-256-GCM; the key is unique to the device, optionally protected by a PIN; see
+  [Saved Passwords](#saved-passwords))
 - Private keys are read from the SD card into memory only; they are not copied to flash
 
 - SSH host keys verified with trust on first use (see [Server Keys](#server-keys-known-hosts))
@@ -740,7 +754,8 @@ Disconnected from SSH server
 **Security Notes:**
 - See [SECURITY.md](SECURITY.md) for the security review, threat model and residual risks
 - Flash is not encrypted: profiles, known hosts and command history (non-secret) are readable by
-  anyone with physical access to the flash chip. Passwords are protected by the vault PIN
+  anyone with physical access to the flash chip. Saved passwords are only protected from that
+  if you set a PIN (`vault pin`)
 - **Recommended for production**: enable ESP32 secure boot and flash encryption
 
 ## Memory Requirements
@@ -775,8 +790,10 @@ Disconnected from SSH server
 
 ### WiFi Connection Issues
 - Use `wifi` then *Scan and connect* to check the network is visible and pick it from the list
-- Auto-connect needs the network saved (`wifi list`) and in range; if you skip the PIN at boot,
-  networks with saved passwords are not tried
+- `wifi list` shows what is saved; any network you've connected to is there. The boot screen
+  also shows "Saved on this device: N WiFi networks"
+- Auto-connect retries in the background; after `wifi off` / `disconnect` it waits until you
+  connect again. With a PIN set, the PIN must be entered after a restart
 - Check SSID and password are correct (use quotes if they contain spaces)
 - Verify WiFi router is in range
 - Ensure WPA2-PSK authentication is supported

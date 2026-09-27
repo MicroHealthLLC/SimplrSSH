@@ -56,10 +56,13 @@ keyboard and trackball. Every change should serve that job.
 
 ## Persistence
 
-- All settings persist on internal flash and must work without an SD card. NVS (`nvs`,
-  256 KB) and the vault (`storage`, SPIFFS) sit **after** the app in `partitions.csv`, so
-  flashing the merged image at 0x0 never erases them. Never move them before the app or
-  shrink them; changing their offsets wipes users' settings.
+- All settings persist on internal flash and must work without an SD card or any prompt:
+  WiFi that connects is saved automatically and reconnects by itself. Everything, including
+  the encrypted password vault, lives in NVS (`nvs`, 256 KB), which sits **after** the app in
+  `partitions.csv` so flashing the merged image at 0x0 never erases it. Never move it before
+  the app or shrink it; changing its offset wipes users' settings.
+- "It just works" beats extra prompts: don't make saving depend on an optional step (like a
+  PIN). Optional hardening must be opt-in.
 - New persistent data goes in NVS namespaces listed in `settings_backup.cpp` (so backup,
   restore and erase cover it) or in the vault if it's a secret. Check save errors and tell
   the user.
@@ -86,7 +89,7 @@ keyboard and trackball. Every change should serve that job.
 | `main/known_hosts.cpp` | Host key verification (TOFU), `hosts` command |
 | `main/profile_menu.cpp` | Menu/wizard plumbing, SSH profiles |
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
-| `main/vault_menu.cpp`, `main/secret_vault.cpp` | Master PIN prompts, encrypted secret storage |
+| `main/vault_menu.cpp`, `main/secret_vault.cpp` | Encrypted password storage (NVS), optional PIN |
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
 | `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
 | `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |

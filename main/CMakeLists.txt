@@ -32,7 +32,6 @@ set(REQUIRED_COMPONENTS
     esp_netif
     esp_event
     esp_timer
-    spiffs
     mbedtls
 )
 
