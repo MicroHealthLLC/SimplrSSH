@@ -9,7 +9,7 @@
 #include "connection_profiles.hpp"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include <cstdio>
 #include <cstdlib>
 
@@ -49,7 +49,7 @@ static std::vector<std::string> load_records(const char* ns, char prefix, uint32
     std::vector<std::string> records;
 
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(ns, NVS_READONLY, &nvs_handle);
+    esp_err_t err = settings_nvs::open(ns, NVS_READONLY, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGI(TAG, "Nothing saved in '%s' (%s)", ns, esp_err_to_name(err));
         return records;
@@ -84,7 +84,7 @@ static esp_err_t save_records(const char* ns, char prefix, uint32_t max_count,
                               const std::vector<std::string>& records)
 {
     nvs_handle_t nvs_handle;
-    esp_err_t err = nvs_open(ns, NVS_READWRITE, &nvs_handle);
+    esp_err_t err = settings_nvs::open(ns, NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS '%s': %s", ns, esp_err_to_name(err));
         return err;

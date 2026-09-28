@@ -11,6 +11,7 @@ set(SOURCES
     "secret_vault.cpp"
     "known_hosts.cpp"
     "sd_card.cpp"
+    "settings_nvs.cpp"
     "settings_backup.cpp"
     "storage_menu.cpp"
     "home_menu.cpp"
@@ -29,6 +30,8 @@ set(INCLUDE_DIRS
 set(REQUIRED_COMPONENTS
     lvgl
     nvs_flash
+    esp_partition
+    app_update
     esp_lcd_touch_gt911
     fatfs
     sdmmc

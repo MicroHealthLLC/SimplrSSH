@@ -12,7 +12,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -1022,7 +1022,7 @@ void SSHTerminal::load_history_from_nvs()
     nvs_handle_t nvs_handle;
     esp_err_t err;
     
-    err = nvs_open("storage", NVS_READONLY, &nvs_handle);
+    err = settings_nvs::open("storage", NVS_READONLY, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Failed to open NVS for reading history: %s", esp_err_to_name(err));
         return;
@@ -1075,7 +1075,7 @@ void SSHTerminal::save_history_to_nvs()
     nvs_handle_t nvs_handle;
     esp_err_t err;
     
-    err = nvs_open("storage", NVS_READWRITE, &nvs_handle);
+    err = settings_nvs::open("storage", NVS_READWRITE, &nvs_handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open NVS for writing history: %s", esp_err_to_name(err));
         return;

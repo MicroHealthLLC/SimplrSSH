@@ -69,6 +69,13 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   the encrypted password vault, lives in NVS (`nvs`, 256 KB), which sits **after** the app in
   `partitions.csv` so flashing the merged image at 0x0 never erases it. Never move it before
   the app or shrink it; changing its offset wipes users' settings.
+- Launcher installs (`-launcher.bin`, `partitions_launcher.csv`, e.g. bmorcelli/Launcher) keep the
+  launcher's bootloader, table and `nvs`; settings go in our own `pocketssh` data partition
+  (spiffs subtype, NVS contents - launchers only create SPIFFS/LittleFS/FAT). Always open
+  namespaces with `settings_nvs::open()` and iterate with `settings_nvs::partition()`, never
+  `nvs_open()` / `NVS_DEFAULT_PART_NAME`. Never erase a launcher's `nvs`. Keep the partition's
+  label, and keep it inside the image (before the app): Launcher's web installer skips
+  partitions past the end of the file.
 - "It just works" beats extra prompts: don't make saving depend on an optional step (like a
   PIN). Optional hardening must be opt-in.
 - New persistent data goes in NVS namespaces listed in `settings_backup.cpp` (so backup,
@@ -99,6 +106,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
 | `main/vault_menu.cpp`, `main/secret_vault.cpp` | Encrypted password storage (NVS), optional PIN |
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
+| `main/settings_nvs.cpp` | Picks and opens the settings partition (`nvs` or a launcher's `pocketssh`) |
 | `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
 | `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |
 | `main/home_menu.cpp` | Home and Security menus, `go_home()` |
@@ -106,7 +114,8 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 
 ## Workflow
 
-- Build: ESP-IDF v5.5.1, `idf.py build`, release image `idf.py merge-bin -o PocketSSH-v<ver>-release.bin`.
+- Build: ESP-IDF v5.5.1, `idf.py build`, release image `idf.py merge-bin -o PocketSSH-v<ver>-release.bin`,
+  launcher image `idf.py launcher-bin` (-> `build/PocketSSH-v<ver>-launcher.bin`).
 - Match the surrounding style (4-space indent, `snake_case`, brace on its own line for
   functions, same line for control flow).
 - CI must build; the code-quality workflow is advisory but aim for zero new warnings.

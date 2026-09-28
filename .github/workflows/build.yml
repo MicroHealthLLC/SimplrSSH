@@ -1,5 +1,7 @@
-# Builds the LilyGO T-Deck (ESP32-S3) firmware and packages it as a single merged
-# image, PocketSSH-v<version>-release.bin, to flash at offset 0x0 (DIO, 80 MHz, 16 MB).
+# Builds the LilyGO T-Deck (ESP32-S3) firmware and packages it as two merged images:
+#   - PocketSSH-v<version>-release.bin, to flash at offset 0x0 (DIO, 80 MHz, 16 MB)
+#   - PocketSSH-v<version>-launcher.bin, to install with a launcher such as
+#     bmorcelli/Launcher (same app, partitions_launcher.csv with the settings partition)
 #
 # Versions and releases (see .github/scripts/plan_release.py):
 #   - Every push to main publishes a release, auto-incrementing the patch number from
@@ -90,8 +92,10 @@ jobs:
             set -o pipefail &&
             idf.py build 2>&1 | tee build-output.log &&
             idf.py merge-bin -o PocketSSH-v${{ steps.plan.outputs.version }}-release.bin &&
+            idf.py launcher-bin &&
             cd build &&
-            sha256sum PocketSSH-v${{ steps.plan.outputs.version }}-release.bin > PocketSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256
+            sha256sum PocketSSH-v${{ steps.plan.outputs.version }}-release.bin > PocketSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256 &&
+            sha256sum PocketSSH-v${{ steps.plan.outputs.version }}-launcher.bin > PocketSSH-v${{ steps.plan.outputs.version }}-launcher.bin.sha256
 
       - name: Summarize
         env:
@@ -100,15 +104,14 @@ jobs:
           PRERELEASE: ${{ steps.plan.outputs.prerelease }}
         run: |
           bin="build/PocketSSH-v$VERSION-release.bin"
-          size=$(stat -c %s "$bin")
+          launcher="build/PocketSSH-v$VERSION-launcher.bin"
           {
             echo "## PocketSSH v$VERSION"
             echo ""
-            echo "| File | Size | Flash at |"
-            echo "|---|---|---|"
-            echo "| \`$(basename "$bin")\` | $size bytes | \`0x0\` (DIO, 80 MHz, 16 MB) |"
-            echo ""
-            echo "SHA-256: \`$(cut -d' ' -f1 "$bin.sha256")\`"
+            echo "| File | Size | Install | SHA-256 |"
+            echo "|---|---|---|---|"
+            echo "| \`$(basename "$bin")\` | $(stat -c %s "$bin") bytes | flash at \`0x0\` (DIO, 80 MHz, 16 MB) | \`$(cut -d' ' -f1 "$bin.sha256")\` |"
+            echo "| \`$(basename "$launcher")\` | $(stat -c %s "$launcher") bytes | with a launcher (bmorcelli/Launcher) | \`$(cut -d' ' -f1 "$launcher.sha256")\` |"
             echo ""
             echo "Flash: \`esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 $(basename "$bin")\`"
             echo ""
@@ -132,9 +135,12 @@ jobs:
           path: |
             build/PocketSSH-v${{ steps.plan.outputs.version }}-release.bin
             build/PocketSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256
+            build/PocketSSH-v${{ steps.plan.outputs.version }}-launcher.bin
+            build/PocketSSH-v${{ steps.plan.outputs.version }}-launcher.bin.sha256
             build/PocketSSH.bin
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
+            build/partition_table/partition-table-launcher.bin
             build/flash_args
           if-no-files-found: error
 
@@ -151,6 +157,7 @@ jobs:
       VERSION: ${{ needs.build.outputs.version }}
       TAG: ${{ needs.build.outputs.tag }}
       IMAGE: PocketSSH-v${{ needs.build.outputs.version }}-release.bin
+      LAUNCHER_IMAGE: PocketSSH-v${{ needs.build.outputs.version }}-launcher.bin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -177,7 +184,9 @@ jobs:
       - name: Write release notes
         run: |
           sha256=$(cut -d' ' -f1 "firmware/$IMAGE.sha256")
-          python3 .github/scripts/release_notes.py "$VERSION" "$IMAGE" "$sha256" release-notes.md
+          launcher_sha256=$(cut -d' ' -f1 "firmware/$LAUNCHER_IMAGE.sha256")
+          python3 .github/scripts/release_notes.py "$VERSION" "$IMAGE" "$sha256" \
+            "$LAUNCHER_IMAGE" "$launcher_sha256" release-notes.md
 
       - name: Publish ${{ needs.build.outputs.tag }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -193,3 +202,5 @@ jobs:
           files: |
             firmware/${{ env.IMAGE }}
             firmware/${{ env.IMAGE }}.sha256
+            firmware/${{ env.LAUNCHER_IMAGE }}
+            firmware/${{ env.LAUNCHER_IMAGE }}.sha256

@@ -85,5 +85,12 @@ encryption, for devices that may be lost.
 - Deleted NVS entries are marked erased but may physically remain until the NVS page is recycled.
 - A server that adds a new host key type can trigger a "key changed" refusal; verify, then
   `hosts forget`.
+- **Installed with a launcher** (`-launcher.bin`, e.g. bmorcelli/Launcher): the launcher's own
+  code runs first, before PocketSSH, and can read, back up, restore and erase every partition,
+  including PocketSSH's `pocketssh` settings partition (the vault stays encrypted; without a
+  PIN its key is in the same partition). Only use a launcher you trust, and set a PIN.
+  Installed from `-launcher.bin`, PocketSSH never touches the launcher's `nvs`; installed from
+  an image without its own partition it has to store its settings there (warned at boot) and
+  never erases it.
 - `skuodi/libssh2_esp` tracks a libssh2 development snapshot rather than a tagged release.
   Re-verify it against upstream (see above) when updating.
