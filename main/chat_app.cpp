@@ -585,7 +585,7 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
         case WizardStep::ChatKeyDelete:
             if (lower(input) != "n") {
                 bool removed = false;
-                if (sdcard::mount() == ESP_OK) {
+                if (sdcard::mount(true) == ESP_OK) {
                     removed = remove((std::string(sdcard::MOUNT_POINT) + "/" + s_key_file).c_str()) == 0;
                     sdcard::unmount();
                 }

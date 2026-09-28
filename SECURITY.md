@@ -67,6 +67,13 @@ A full sweep for malicious code, unexpected data flows and vulnerabilities.
 | The WiFi driver stored its own plain-text copy of the WiFi password in NVS | `CONFIG_ESP_WIFI_NVS_ENABLED` off; networks are saved by the app with the password in the vault |
 | SD card backups could carry secrets or be tampered with | Backups hold only non-secret settings plus the already-encrypted vault files; restore accepts only known namespaces, NVS-sized keys/values and vault file names (no paths), and validates the whole backup before changing anything |
 
+### SD card review (2026-09-28)
+
+| Finding | Fix |
+|---|---|
+| After unmounting, the SD driver left the card's CS pin (GPIO 39) as a floating input while the display kept clocking the shared SCK/MOSI lines, so the card could accept pixel data as commands and write to random sectors (corrupted FAT32 cards) | CS is driven high after every unmount or failed mount |
+| Reading the card could write to it (boot created `/ssh_keys`) | Mounts are read-only by default (a disk driver that refuses writes); only backup and deleting `openai.key` mount writable; the card is never formatted |
+
 ### Usability change (2026-09-27)
 
 Requiring a master PIN before any password could be saved meant networks silently weren't

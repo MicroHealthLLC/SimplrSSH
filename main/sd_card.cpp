@@ -9,6 +9,8 @@
 #include "utilities.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "diskio_impl.h"
+#include "diskio_sdmmc.h"
 #include "esp_rom_gpio.h"
 #include "driver/gpio.h"
 #include "driver/sdspi_host.h"
@@ -30,10 +32,60 @@ static const spi_host_device_t BOOT_SPI_HOST = SPI3_HOST;
 static sdmmc_card_t* s_card = NULL;
 static bool s_owns_bus = false;
 
-static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz)
+// The SD driver leaves CS as a floating input when it releases the card. The display
+// keeps clocking data on the same SCK/MOSI lines, so a floating CS lets the card take
+// pixel data as commands (including writes) and corrupt the file system. Keep it high.
+static void deselect_card()
+{
+    gpio_reset_pin(BOARD_SDCARD_CS);
+    gpio_set_direction(BOARD_SDCARD_CS, GPIO_MODE_OUTPUT);
+    gpio_set_level(BOARD_SDCARD_CS, 1);
+}
+
+// Read-only disk driver: reads go to the card, writes are refused before they reach it
+static DSTATUS ro_status(BYTE pdrv)
+{
+    return STA_PROTECT;
+}
+
+static DRESULT ro_read(BYTE pdrv, BYTE* buff, DWORD sector, UINT count)
+{
+    return sdmmc_read_sectors(s_card, buff, sector, count) == ESP_OK ? RES_OK : RES_ERROR;
+}
+
+static DRESULT ro_write(BYTE pdrv, const BYTE* buff, DWORD sector, UINT count)
+{
+    return RES_WRPRT;
+}
+
+static DRESULT ro_ioctl(BYTE pdrv, BYTE cmd, void* buff)
+{
+    switch (cmd) {
+        case CTRL_SYNC:
+            return RES_OK;
+        case GET_SECTOR_COUNT:
+            *((DWORD*)buff) = s_card->csd.capacity;
+            return RES_OK;
+        case GET_SECTOR_SIZE:
+            *((WORD*)buff) = s_card->csd.sector_size;
+            return RES_OK;
+        default:
+            return RES_WRPRT;
+    }
+}
+
+static const ff_diskio_impl_t s_read_only_impl = {
+    .init = &ro_status,
+    .status = &ro_status,
+    .read = &ro_read,
+    .write = &ro_write,
+    .ioctl = &ro_ioctl,
+};
+
+static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz, bool writable)
 {
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
-    mount_config.format_if_mount_failed = false;
+    mount_config.format_if_mount_failed = false;  // Never format the user's card
     mount_config.max_files = 4;
     mount_config.allocation_unit_size = 16 * 1024;
 
@@ -48,8 +100,14 @@ static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "No SD card (%s)", esp_err_to_name(err));
         s_card = NULL;
+        deselect_card();
+        return err;
     }
-    return err;
+    if (!writable) {
+        // Mounting only reads the card; from here on FATFS refuses any change (FR_WRITE_PROTECTED)
+        ff_diskio_register(ff_diskio_get_pdrv_card(s_card), &s_read_only_impl);
+    }
+    return ESP_OK;
 }
 
 esp_err_t sdcard::mount_at_boot()
@@ -69,7 +127,7 @@ esp_err_t sdcard::mount_at_boot()
     }
     s_owns_bus = true;
 
-    err = mount_on(BOOT_SPI_HOST, SDMMC_FREQ_DEFAULT);
+    err = mount_on(BOOT_SPI_HOST, SDMMC_FREQ_DEFAULT, false);
     if (err != ESP_OK) {
         spi_bus_free(BOOT_SPI_HOST);
         s_owns_bus = false;
@@ -87,13 +145,13 @@ void sdcard::share_display_bus()
     esp_rom_gpio_connect_in_signal(BOARD_SPI_MISO, spi_periph_signal[DISPLAY_SPI_HOST].spiq_in, false);
 }
 
-esp_err_t sdcard::mount()
+esp_err_t sdcard::mount(bool writable)
 {
     if (s_card) {
         return ESP_OK;
     }
     s_owns_bus = false;
-    return mount_on(DISPLAY_SPI_HOST, 10000);  // Conservative clock: MISO goes through the GPIO matrix
+    return mount_on(DISPLAY_SPI_HOST, 10000, writable);  // Conservative clock: MISO goes through the GPIO matrix
 }
 
 void sdcard::unmount()
@@ -101,6 +159,7 @@ void sdcard::unmount()
     if (s_card) {
         esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
         s_card = NULL;
+        deselect_card();
     }
     if (s_owns_bus) {
         spi_bus_free(BOOT_SPI_HOST);
@@ -116,13 +175,8 @@ int sdcard::load_ssh_keys(SSHTerminal* terminal)
     DIR* dir = opendir(keys_dir);
     
     if (!dir) {
-        ESP_LOGW(TAG, "Failed to open directory %s - creating it", keys_dir);
-        mkdir(keys_dir, 0755);
-        dir = opendir(keys_dir);
-        if (!dir) {
-            ESP_LOGE(TAG, "Still cannot open directory after creation");
-            return 0;
-        }
+        ESP_LOGW(TAG, "No %s directory", keys_dir);  // Reading never changes the card
+        return 0;
     }
 
     ESP_LOGI(TAG, "Directory opened, scanning for .pem files...");
