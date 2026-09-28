@@ -37,9 +37,12 @@ static bool s_owns_bus = false;
 // pixel data as commands (including writes) and corrupt the file system. Keep it high.
 static void deselect_card()
 {
-    gpio_reset_pin(BOARD_SDCARD_CS);
-    gpio_set_direction(BOARD_SDCARD_CS, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_SDCARD_CS, 1);
+    gpio_set_level(BOARD_SDCARD_CS, 1);  // Level first, so CS never pulses low
+    gpio_config_t out = {};
+    out.pin_bit_mask = 1ULL << BOARD_SDCARD_CS;
+    out.mode = GPIO_MODE_OUTPUT;
+    out.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&out);
 }
 
 // Read-only disk driver: reads go to the card, writes are refused before they reach it
@@ -127,7 +130,7 @@ esp_err_t sdcard::mount_at_boot()
     }
     s_owns_bus = true;
 
-    err = mount_on(BOOT_SPI_HOST, SDMMC_FREQ_DEFAULT, false);
+    err = mount_on(BOOT_SPI_HOST, 10000, false);  // Same clock as the runtime mount
     if (err != ESP_OK) {
         spi_bus_free(BOOT_SPI_HOST);
         s_owns_bus = false;

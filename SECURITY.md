@@ -72,6 +72,7 @@ A full sweep for malicious code, unexpected data flows and vulnerabilities.
 | Finding | Fix |
 |---|---|
 | After unmounting, the SD driver left the card's CS pin (GPIO 39) as a floating input while the display kept clocking the shared SCK/MOSI lines, so the card could accept pixel data as commands and write to random sectors (corrupted FAT32 cards) | CS is driven high after every unmount or failed mount |
+| At boot the peripheral power pin (GPIO 10) and chip selects pulsed low while being configured, and the SD card was initialised immediately after power-on: a card talked to while its supply is coming up or dipping can damage its internal tables and become unreadable | Pins get their level before becoming outputs (no glitch); 250 ms settle before the SD card is touched; boot mount uses the same 10 MHz clock as the runtime mount |
 | Reading the card could write to it (boot created `/ssh_keys`) | Mounts are read-only by default (a disk driver that refuses writes); only backup and deleting `openai.key` mount writable; the card is never formatted |
 
 ### Usability change (2026-09-27)

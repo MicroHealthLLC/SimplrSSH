@@ -196,25 +196,22 @@ esp_err_t _bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_
 
 void device_init(void)
 {
-    /* Initialize power on pin */
-    gpio_reset_pin(BOARD_POWERON);
-    gpio_set_direction(BOARD_POWERON, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_POWERON, 1);
+    // Level is set before the pin becomes an output, so the peripheral power and the
+    // chip selects never glitch low (a low pulse on the SD card's CS or supply can corrupt it)
+    gpio_config_t out = {};
+    out.mode = GPIO_MODE_OUTPUT;
+    out.pull_up_en = GPIO_PULLUP_ENABLE;
+    for (gpio_num_t pin : {BOARD_POWERON, BOARD_SDCARD_CS, RADIO_CS_PIN, BOARD_TFT_CS}) {
+        gpio_set_level(pin, 1);
+        out.pin_bit_mask = 1ULL << pin;
+        gpio_config(&out);
+    }
 
-    /* Initialize GPIO for SD card CS */
-    gpio_reset_pin(BOARD_SDCARD_CS);
-    gpio_set_direction(BOARD_SDCARD_CS, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_SDCARD_CS, 1);
-
-    /* Initialize radio CS pin */
-    gpio_reset_pin(RADIO_CS_PIN);
-    gpio_set_direction(RADIO_CS_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(RADIO_CS_PIN, 1);
-
-    /* Initialize TFT CS pin */
-    gpio_reset_pin(BOARD_TFT_CS);
-    gpio_set_direction(BOARD_TFT_CS, GPIO_MODE_OUTPUT);
-    gpio_set_level(BOARD_TFT_CS, 1);
+    // Let the peripheral supply settle before the SD card is used. A card that is talked to
+    // while its supply is still coming up (or dipping from the display/radio inrush) can
+    // damage its own internal tables and become unreadable. A card that misses the init that
+    // puts it in SPI mode listens to the display's traffic whatever its CS pin says.
+    vTaskDelay(pdMS_TO_TICKS(250));
 
     /* Configure MISO with pull-up for SD card (must be done before SPI bus init) */
     gpio_reset_pin(BOARD_SPI_MISO);
@@ -244,7 +241,8 @@ extern "C" void app_main(void)
     /* Initialize device GPIOs */
     device_init();
 
-    /* Load SSH keys from SD card BEFORE LVGL initialization */
+    /* Load SSH keys from SD card BEFORE LVGL initialization. This (read-only) mount also
+       switches the card to SPI mode, so it ignores the display while its CS is high. */
     // Note: Create a temporary terminal instance just for loading keys
     SSHTerminal* temp_terminal = new SSHTerminal();
     if (sdcard::mount_at_boot() == ESP_OK) {
