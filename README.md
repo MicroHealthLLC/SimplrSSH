@@ -32,6 +32,13 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 
 ## Version History
 
+### Unreleased
+- **Fixed**: The SD card could get corrupted (needing a reformat) after PocketSSH read it.
+  After each use the card's chip-select pin was left floating, so the card could take display
+  traffic on the shared SPI lines as commands and write garbage. It is now held deselected.
+  PocketSSH also never writes to the card except when you back up or delete `openai.key`
+  (it no longer creates `/ssh_keys`), and never formats it - your FAT32 card is left as it is
+
 ### v1.4.0 (September 27, 2026)
 - **Added**: Home menu at startup - WiFi, SSH servers, ChatGPT, Storage, Security. `menu`
   shows it anytime; `exit` returns to it (closing SSH first) instead of leaving you at a prompt
@@ -432,7 +439,9 @@ used automatically - there is nothing to set up.
 **Everything is saved on the device itself** (internal flash) and survives restarts, power-offs
 and firmware updates - no SD card needed. That includes saved WiFi networks, SSH profiles,
 trusted server keys, command history and the encrypted passwords. The SD card is only used for
-SSH key files and optional backups.
+SSH key files and optional backups. Reading the card (keys, `openai.key`, the storage menu)
+never changes it; only **Back up** and deleting `openai.key` write to it, and it is never
+formatted.
 
 Type `storage` to see what is saved and copy it between the device and the SD card:
 

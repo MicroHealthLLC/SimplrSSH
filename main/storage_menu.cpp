@@ -60,7 +60,7 @@ void SSHTerminal::storage_backup()
 {
     append_text("Backing up to SD card...\n");
     refresh_display_now();
-    if (sdcard::mount() != ESP_OK) {
+    if (sdcard::mount(true) != ESP_OK) {
         append_text("No SD card found.\n");
         return;
     }
