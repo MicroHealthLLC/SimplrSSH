@@ -86,7 +86,7 @@ private:
         // Home and security menus (home_menu.cpp)
         HomeMenu, SecurityMenu,
         // ChatGPT (chat_app.cpp)
-        ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModel, ChatModelOther
+        ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModelWait, ChatModel, ChatModelOther
     };
     enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, SetPin, ChangePin, RemovePin };
     enum class SecretChange { Keep, Set, Clear };
@@ -184,7 +184,13 @@ private:
     volatile bool home_pending = false;  // Set by other tasks (SSH closed): show the home menu
 
     // ChatGPT (chat_app.cpp). History is touched only while holding the display lock.
+    // Model names exactly as OpenAI gives them, saved. Until the user picks a chat model, and always
+    // for voice, the newest ones from OpenAI's model list are used (refreshed once per boot).
     std::string chat_model = "gpt-4o-mini";
+    bool chat_model_picked = false;          // Chosen in Model: never changed automatically
+    std::string chat_stt_model = "whisper-1";
+    std::string chat_tts_model = "gpt-4o-mini-tts";
+    bool chat_models_checked = false;        // Model list fetched this boot
     bool chat_speak = false;           // Read replies aloud
     std::vector<openai::Message> chat_history;
     lv_obj_t* chat_view = NULL;
@@ -194,6 +200,9 @@ private:
     volatile bool chat_busy = false;
     volatile bool chat_recording = false;
     volatile uint32_t chat_generation = 0;  // Bumped when the chat view closes
+    std::vector<std::string> chat_models;  // From OpenAI, newest first (empty until asked)
+    bool chat_models_for_menu = false;
+    volatile bool chat_models_busy = false;
     std::string input_banner;          // Shown instead of the input line (e.g. recording)
     int pty_cols = 80;                 // Terminal size reported to SSH servers
     int pty_rows = 24;
@@ -309,6 +318,10 @@ private:
     void chat_ui_banner(const std::string& text);
     void chat_store_key(const std::string& key);
     static void chat_worker(void* param);
+    void chat_request_models(bool for_menu);
+    static void chat_models_worker(void* param);
+    void chat_models_done(bool ok, const openai::Models& models, const std::string& error);
+    std::string chat_apply_models(const openai::Models& m);
     bool chat_step_prompt();
     bool chat_step_input(const std::string& raw, const std::string& input);
 

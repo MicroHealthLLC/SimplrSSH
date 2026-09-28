@@ -18,13 +18,14 @@
 #include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
 #include "settings_nvs.hpp"
+#include "mbedtls/platform_util.h"
 #include <algorithm>
 #include <cstdio>
 
 static const char *TAG = "CHAT";
 static const char *KEY_ID = "chat:openai";
-static const char *MODELS[] = {"gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o"};
-static const int MODEL_COUNT = 4;
+static const size_t MODELS_SHOWN = 20;        // Models listed in the Model menu
+static const size_t MAX_KEY_LEN = 256;         // Vault limit
 static const size_t MAX_HISTORY = 12;          // Messages kept for context
 static const size_t MAX_CONTEXT_CHARS = 6000;  // Context sent per request
 static const uint32_t MAX_BUBBLES = 30;        // Labels kept on screen
@@ -47,6 +48,36 @@ static std::string lower(std::string s)
     return s;
 }
 
+// The API key from what was typed or read from a file: skips a UTF-8 byte-order mark and blank
+// lines, takes the first line, drops surrounding quotes. Empty (with `problem` set) if invalid.
+static std::string clean_key(const std::string& raw, std::string& problem)
+{
+    std::string text = raw.compare(0, 3, "\xEF\xBB\xBF") == 0 ? raw.substr(3) : raw;
+    std::string key;
+    size_t pos = 0;
+    while (key.empty() && pos < text.size()) {
+        size_t nl = text.find('\n', pos);
+        key = trim(text.substr(pos, nl == std::string::npos ? std::string::npos : nl - pos));
+        pos = nl == std::string::npos ? text.size() : nl + 1;
+    }
+    if (key.size() >= 2 && (key[0] == '"' || key[0] == '\'') && key.back() == key[0]) {
+        key = trim(key.substr(1, key.size() - 2));
+    }
+    if (key.rfind("sk-", 0) != 0 || key.size() < 20 || key.size() > MAX_KEY_LEN) {
+        problem = "That doesn't look like an OpenAI key (sk-..., on the first line).";
+        key.clear();
+        return key;
+    }
+    for (char c : key) {
+        if (!isalnum((unsigned char)c) && c != '-' && c != '_') {
+            problem = "The key contains a character OpenAI keys don't use (only letters, digits, - and _).";
+            key.clear();
+            break;
+        }
+    }
+    return key;
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -59,8 +90,21 @@ void SSHTerminal::chat_load_settings()
     }
     char model[64];
     size_t len = sizeof(model);
-    if (nvs_get_str(h, "model", model, &len) == ESP_OK && model[0]) {
+    bool saved_model = nvs_get_str(h, "model", model, &len) == ESP_OK && model[0];
+    if (saved_model) {
         chat_model = model;
+    }
+    uint32_t picked = 0;
+    if (nvs_get_u32(h, "picked", &picked) == ESP_OK) {
+        chat_model_picked = picked != 0;
+    } else {
+        chat_model_picked = saved_model;  // Saved by an older version: treat it as the user's choice
+    }
+    for (auto [name, target] : {std::pair<const char*, std::string*>{"stt", &chat_stt_model}, {"tts", &chat_tts_model}}) {
+        len = sizeof(model);
+        if (nvs_get_str(h, name, model, &len) == ESP_OK && model[0]) {
+            *target = model;
+        }
     }
     uint32_t speak = 0;
     if (nvs_get_u32(h, "speak", &speak) == ESP_OK) {
@@ -75,6 +119,15 @@ void SSHTerminal::chat_save_settings()
     esp_err_t err = settings_nvs::open("chat", NVS_READWRITE, &h);
     if (err == ESP_OK) {
         err = nvs_set_str(h, "model", chat_model.c_str());
+        if (err == ESP_OK) {
+            err = nvs_set_u32(h, "picked", chat_model_picked ? 1 : 0);
+        }
+        if (err == ESP_OK) {
+            err = nvs_set_str(h, "stt", chat_stt_model.c_str());
+        }
+        if (err == ESP_OK) {
+            err = nvs_set_str(h, "tts", chat_tts_model.c_str());
+        }
         if (err == ESP_OK) {
             err = nvs_set_u32(h, "speak", chat_speak ? 1 : 0);
         }
@@ -92,11 +145,18 @@ void SSHTerminal::chat_store_key(const std::string& key)
 {
     wizard.secret = key;
     with_vault([this]() {
-        if (vault::put(KEY_ID, wizard.secret) == ESP_OK) {
-            append_text("API key saved on this device (encrypted).\n");
-        } else {
+        // Read the key back and compare, so a bad save or decrypt shows up now, not as a rejected key
+        std::string check;
+        if (vault::put(KEY_ID, wizard.secret) != ESP_OK) {
             append_text("ERROR: Could not save the API key.\n");
+        } else if (vault::get(KEY_ID, check) != ESP_OK || check != wizard.secret) {
+            append_text("ERROR: The saved API key didn't read back correctly. Please report this.\n");
+        } else {
+            append_text(("API key saved on this device (encrypted), " + std::to_string(check.size()) +
+                         " characters, ends ..." + check.substr(check.size() - 4) + ".\n").c_str());
+            chat_request_models(false);  // Ask OpenAI whether it accepts the key
         }
+        vault::wipe(check);
         vault::wipe(wizard.secret);
         bool open_now = chat_open_after_key;
         chat_open_after_key = false;
@@ -109,6 +169,114 @@ void SSHTerminal::chat_store_key(const std::string& key)
             wizard_goto(WizardStep::ChatMenu);
         }
     });
+}
+
+// ---------------------------------------------------------------------------
+// Models: asked from OpenAI (GET /v1/models) in a worker task, which also checks the key
+// ---------------------------------------------------------------------------
+
+// for_menu: show the Model menu when the list arrives; otherwise report whether the key works
+void SSHTerminal::chat_request_models(bool for_menu)
+{
+    if (!wifi_connected) {
+        append_text(for_menu ? "WiFi is off - can't ask OpenAI for the model list.\n"
+                             : "Connect to WiFi to check the key with OpenAI.\n");
+        if (for_menu) {
+            wizard_goto(WizardStep::ChatModel);
+        }
+        return;
+    }
+    if (chat_busy || chat_models_busy) {
+        append_text("Still waiting for OpenAI - try again in a moment.\n");
+        if (for_menu) {
+            wizard_prompt();
+        }
+        return;
+    }
+    chat_models_for_menu = for_menu;
+    chat_models_busy = true;
+    if (for_menu) {
+        wizard_goto(WizardStep::ChatModelWait);
+    }
+    refresh_display_now();
+    if (xTaskCreate(chat_models_worker, "models", WORKER_STACK, this, 4, NULL) != pdPASS) {
+        chat_models_busy = false;
+        append_text("Not enough memory right now - try again.\n");
+        if (for_menu) {
+            wizard_goto(WizardStep::ChatModel);
+        }
+    }
+}
+
+void SSHTerminal::chat_models_worker(void* param)
+{
+    SSHTerminal* t = (SSHTerminal*)param;
+    std::string key, error;
+    openai::Models models;
+    esp_err_t err = vault::get(KEY_ID, key);
+    if (err == ESP_OK) {
+        err = openai::list_models(key, models, error);
+    } else {
+        error = "Can't read the saved API key";
+    }
+    vault::wipe(key);
+    if (bsp_display_lock(5000)) {
+        t->chat_models_done(err == ESP_OK, models, error);
+        bsp_display_unlock();
+    }
+    t->chat_models_busy = false;
+    vTaskDelete(NULL);
+}
+
+// Display lock held. Takes the newest voice models, and the newest chat model unless the user
+// picked one: a model the user picked is never changed here. Returns a note for the user, or "".
+std::string SSHTerminal::chat_apply_models(const openai::Models& m)
+{
+    std::string note;
+    chat_models = m.chat;
+    chat_models_checked = true;
+    if (!m.transcribe.empty()) {
+        chat_stt_model = m.transcribe;
+    }
+    if (!m.speech.empty()) {
+        chat_tts_model = m.speech;
+    }
+    if (!chat_model_picked && !m.chat_default.empty() && m.chat_default != chat_model) {
+        chat_model = m.chat_default;
+        note = "Using " + chat_model + " (newest; pick another in Model).";
+    } else if (chat_model_picked && std::find(m.chat.begin(), m.chat.end(), chat_model) == m.chat.end()) {
+        note = "Your model " + chat_model + " isn't in OpenAI's list for this key - pick one in Model.";
+    }
+    chat_save_settings();
+    return note;
+}
+
+// Display lock held
+void SSHTerminal::chat_models_done(bool ok, const openai::Models& models, const std::string& error)
+{
+    std::string note = ok ? chat_apply_models(models) : "";
+
+    if (chat_models_for_menu) {
+        if (wizard.step != WizardStep::ChatModelWait) {
+            return;  // The menu was left while waiting
+        }
+        if (!ok) {
+            append_text(("Couldn't get the model list: " + error + "\n").c_str());
+        } else if (!note.empty()) {
+            append_text((note + "\n").c_str());
+        }
+        wizard_goto(WizardStep::ChatModel);
+        return;
+    }
+
+    std::string msg = ok ? "OpenAI accepted the API key (" + std::to_string(models.chat.size()) + " chat models)." +
+                           (note.empty() ? "" : " " + note)
+                         : "Key check: " + error;
+    if (chat_view) {
+        chat_add_bubble(BUBBLE_INFO, msg);
+    } else {
+        append_text(("\n" + msg + "\n").c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +467,31 @@ void SSHTerminal::chat_job()
         return;
     }
 
+    // Once per boot, ask OpenAI for its current models so retired ones are replaced by newer ones
+    if (!chat_models_checked) {
+        openai::Models models;
+        std::string list_error;
+        if (openai::list_models(key, models, list_error) == ESP_OK && bsp_display_lock(1000)) {
+            std::string note = chat_apply_models(models);
+            if (!note.empty() && chat_view && gen == chat_generation) {
+                chat_add_bubble(BUBBLE_INFO, note);
+            }
+            bsp_display_unlock();
+        }
+    }
+    // The exact model names used for this whole request
+    std::string model, stt_model, tts_model;
+    if (bsp_display_lock(1000)) {
+        model = chat_model;
+        stt_model = chat_stt_model;
+        tts_model = chat_tts_model;
+        bsp_display_unlock();
+    } else {
+        chat_recording = false;
+        vault::wipe(key);
+        return;
+    }
+
     if (chat_job_voice) {
         int16_t* pcm = (int16_t*)heap_caps_malloc(MAX_RECORD_SAMPLES * 2, MALLOC_CAP_SPIRAM);
         if (!pcm || audio::mic_start() != ESP_OK) {
@@ -326,7 +519,7 @@ void SSHTerminal::chat_job()
             chat_ui_bubble(gen, BUBBLE_INFO, "Too short - hold the trackball while you speak.");
         } else {
             chat_ui_banner("Transcribing...");
-            if (openai::transcribe(key, pcm, n, audio::MIC_RATE, heard, error) != ESP_OK) {
+            if (openai::transcribe(key, stt_model, pcm, n, audio::MIC_RATE, heard, error) != ESP_OK) {
                 chat_ui_bubble(gen, BUBBLE_INFO, error);
             } else if (heard.empty()) {
                 chat_ui_bubble(gen, BUBBLE_INFO, "Didn't catch that - try again.");
@@ -364,7 +557,7 @@ void SSHTerminal::chat_job()
     lv_obj_t* label = chat_ui_bubble(gen, BUBBLE_AI, "...");
     std::string reply;
     int64_t last_draw = 0;
-    esp_err_t err = openai::chat(key, chat_model, context, [&](const std::string& piece) {
+    esp_err_t err = openai::chat(key, model, context, [&](const std::string& piece) {
         if (reply.size() < 4000) {
             reply += piece;
         }
@@ -399,7 +592,7 @@ void SSHTerminal::chat_job()
         chat_ui_banner("Speaking...");
         uint8_t carry = 0;
         bool has_carry = false;
-        openai::speak(key, reply, [&](const uint8_t* data, size_t len) {
+        openai::speak(key, tts_model, reply, [&](const uint8_t* data, size_t len) {
             // Keep whole 16-bit samples across chunk boundaries
             if (has_carry && len > 0) {
                 uint8_t pair[2] = {carry, data[0]};
@@ -483,15 +676,27 @@ bool SSHTerminal::chat_step_prompt()
             append_text(("Delete " + s_key_file + " from the SD card now? (y/n) [y]: ").c_str());
             wizard.choices = {"y", "n"};
             return true;
-        case WizardStep::ChatModel:
-            append_text("Model:\n");
-            for (int i = 0; i < MODEL_COUNT; i++) {
-                append_text((" " + std::to_string(i + 1) + ") " + MODELS[i] + (chat_model == MODELS[i] ? " *" : "") +
-                             (i == 0 ? "  (fast, low cost)" : "") + "\n").c_str());
-            }
-            append_text(" 5) Other (type a model name)\n 0) Back\nSelect: ");
-            wizard.choices = {"1", "2", "3", "4", "5", "0"};
+        case WizardStep::ChatModelWait:
+            append_text("Asking OpenAI which models your key can use...\n");
             return true;
+        case WizardStep::ChatModel: {
+            size_t shown = std::min(chat_models.size(), MODELS_SHOWN);
+            wizard.choices.clear();
+            if (shown == 0) {
+                append_text(("Model: " + chat_model + "\n").c_str());
+            } else {
+                append_text("Models for your key (newest first):\n");
+            }
+            for (size_t i = 0; i < shown; i++) {
+                append_text((" " + std::to_string(i + 1) + ") " + chat_models[i] +
+                             (chat_models[i] == chat_model ? " *" : "") + "\n").c_str());
+                wizard.choices.push_back(std::to_string(i + 1));
+            }
+            append_text(" t) Type a model name\n 0) Back\nSelect: ");
+            wizard.choices.push_back("t");
+            wizard.choices.push_back("0");
+            return true;
+        }
         case WizardStep::ChatModelOther:
             append_text("Model name (e.g. gpt-4o): ");
             return true;
@@ -510,7 +715,7 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
                 chat_open_after_key = false;
                 wizard_goto(WizardStep::ChatKeySource);
             } else if (input == "3") {
-                wizard_goto(WizardStep::ChatModel);
+                chat_request_models(true);
             } else if (input == "4") {
                 chat_speak = !chat_speak;
                 chat_save_settings();
@@ -537,23 +742,27 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
                     wizard_prompt();
                     return true;
                 }
-                for (const char* name : {"openai.key", "openai.txt"}) {
+                // Windows may hide a .txt extension, so openai.key can really be openai.key.txt
+                std::string problem = "No openai.key file at the top of the SD card.";
+                for (const char* name : {"openai.key", "openai.key.txt", "openai.txt"}) {
                     std::string path = std::string(sdcard::MOUNT_POINT) + "/" + name;
-                    FILE* f = fopen(path.c_str(), "r");
+                    FILE* f = fopen(path.c_str(), "rb");
                     if (f) {
-                        char buf[400];
-                        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+                        char buf[1024];
+                        size_t n = fread(buf, 1, sizeof(buf), f);
                         fclose(f);
-                        buf[n] = '\0';
-                        key = trim(buf);
+                        std::string raw(buf, n);
+                        mbedtls_platform_zeroize(buf, sizeof(buf));
+                        key = clean_key(raw, problem);
+                        vault::wipe(raw);
                         s_key_file = name;
                         break;
                     }
                 }
                 sdcard::unmount();
-                if (key.rfind("sk-", 0) != 0 || key.size() < 20 || key.find(' ') != std::string::npos) {
-                    append_text("No valid key found. Put the key (sk-...) alone in openai.key\n"
-                                "at the top of the SD card.\n");
+                if (key.empty()) {
+                    append_text((s_key_file.empty() ? problem : s_key_file + ": " + problem).c_str());
+                    append_text("\nPut the key (sk-...) alone in openai.key at the top of the SD card.\n");
                     s_key_file.clear();
                     wizard_prompt();
                 } else {
@@ -569,11 +778,12 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
             return true;
 
         case WizardStep::ChatKey: {
-            std::string key = trim(raw_input);
-            if (key.empty()) {
+            std::string problem;
+            std::string key = clean_key(raw_input, problem);
+            if (trim(raw_input).empty()) {
                 wizard_done();
-            } else if (key.rfind("sk-", 0) != 0 || key.size() < 20) {
-                append_text("That doesn't look like an OpenAI key (starts with sk-).\n");
+            } else if (key.empty()) {
+                append_text((problem + "\n").c_str());
                 wizard_prompt();
             } else {
                 chat_store_key(key);
@@ -600,13 +810,20 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
             }
             return true;
 
+        case WizardStep::ChatModelWait:
+            append_text("Still asking OpenAI - one moment.\n");
+            return true;
+
         case WizardStep::ChatModel: {
-            int n = input.size() == 1 ? input[0] - '0' : -1;
-            if (n >= 1 && n <= MODEL_COUNT) {
-                chat_model = MODELS[n - 1];
+            int n = !input.empty() && input.size() <= 2 && std::all_of(input.begin(), input.end(), ::isdigit)
+                        ? atoi(input.c_str()) : -1;
+            size_t shown = std::min(chat_models.size(), MODELS_SHOWN);
+            if (n >= 1 && (size_t)n <= shown) {
+                chat_model = chat_models[n - 1];
+                chat_model_picked = true;
                 chat_save_settings();
                 wizard_goto(WizardStep::ChatMenu);
-            } else if (n == 5) {
+            } else if (lower(input) == "t") {
                 wizard_goto(WizardStep::ChatModelOther);
             } else if (n == 0) {
                 wizard_goto(WizardStep::ChatMenu);
@@ -620,6 +837,7 @@ bool SSHTerminal::chat_step_input(const std::string& raw_input, const std::strin
         case WizardStep::ChatModelOther:
             if (!input.empty() && input.size() < 60 && input.find(' ') == std::string::npos) {
                 chat_model = input;
+                chat_model_picked = true;
                 chat_save_settings();
             }
             wizard_goto(WizardStep::ChatMenu);
