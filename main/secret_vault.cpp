@@ -13,7 +13,7 @@
 #include "secret_vault.hpp"
 #include "esp_log.h"
 #include "esp_random.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include "mbedtls/gcm.h"
 #include "mbedtls/md.h"
 #include "mbedtls/platform_util.h"
@@ -48,7 +48,7 @@ static uint8_t s_data_key[KEY_LEN];
 static bool nvs_read_blob(const char* ns, const char* key, std::vector<uint8_t>& out)
 {
     nvs_handle_t h;
-    if (nvs_open(ns, NVS_READONLY, &h) != ESP_OK) {
+    if (settings_nvs::open(ns, NVS_READONLY, &h) != ESP_OK) {
         return false;
     }
     size_t len = 0;
@@ -64,7 +64,7 @@ static bool nvs_read_blob(const char* ns, const char* key, std::vector<uint8_t>&
 static esp_err_t nvs_write_blob(const char* ns, const char* key, const void* data, size_t len)
 {
     nvs_handle_t h;
-    esp_err_t err = nvs_open(ns, NVS_READWRITE, &h);
+    esp_err_t err = settings_nvs::open(ns, NVS_READWRITE, &h);
     if (err == ESP_OK) {
         err = nvs_set_blob(h, key, data, len);
         if (err == ESP_OK) {
@@ -81,7 +81,7 @@ static esp_err_t nvs_write_blob(const char* ns, const char* key, const void* dat
 static void nvs_erase(const char* ns, const char* key)
 {
     nvs_handle_t h;
-    if (nvs_open(ns, NVS_READWRITE, &h) == ESP_OK) {
+    if (settings_nvs::open(ns, NVS_READWRITE, &h) == ESP_OK) {
         if (key) {
             nvs_erase_key(h, key);
         } else {
@@ -444,7 +444,7 @@ int vault::count()
 {
     int n = 0;
     nvs_iterator_t it = NULL;
-    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, NS_VAULT, NVS_TYPE_BLOB, &it);
+    esp_err_t err = nvs_entry_find(settings_nvs::partition(), NS_VAULT, NVS_TYPE_BLOB, &it);
     while (err == ESP_OK) {
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);

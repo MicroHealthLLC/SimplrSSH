@@ -45,6 +45,10 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
   to scroll back; old lines are trimmed instead of the screen being wiped; SSH servers are told
   the real screen width so output wraps to fit
 - **Fixed**: Long messages (over 256 characters) lost their beginning on screen
+- **Added**: Install with a launcher such as [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher):
+  each release has `PocketSSH-v<version>-launcher.bin`, installed from the launcher's SD menu or
+  web UI into a free slot (no flashing at `0x0`). Settings get their own `pocketssh` partition,
+  kept across updates, and the launcher's own settings are never touched
 
 ### v1.3.2 (September 27, 2026)
 - **Fixed**: WiFi networks now always save. Every network you connect to (with the `wifi` menu
@@ -195,7 +199,9 @@ Quick access to commonly used control sequences:
 ### Prerequisites
 - LilyGO T-Deck / T-Deck Plus (ESP32-S3)
 - The firmware image `PocketSSH-v<version>-release.bin` from the GitHub releases or Actions
-  artifacts (see [Deployment](#deployment)), or ESP-IDF v5.5.1 to [build it yourself](#building-from-source)
+  artifacts (see [Deployment](#deployment)), or ESP-IDF v5.5.1 to [build it yourself](#building-from-source).
+  If your T-Deck runs a launcher (e.g. [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher)),
+  use `PocketSSH-v<version>-launcher.bin` instead - see [Installing with a Launcher](#installing-with-a-launcher)
 
 ### First-Time Setup
 
@@ -460,6 +466,11 @@ Shortcuts: `storage backup`, `storage restore`, `storage keys`.
 
 > Flashing a new release image keeps your settings. Choosing "Erase flash" in a flashing tool
 > wipes them - back up to the SD card first.
+>
+> Installed with a launcher, the settings live in PocketSSH's own `pocketssh` partition, which the
+> launcher keeps when you install a newer `-launcher.bin`. Uninstalling PocketSSH or letting the
+> launcher "remove data" to make room erases them - back up first. Settings don't move between a
+> direct-flash install and a launcher install; use *Back up* / *Restore* to carry them over.
 
 ## Server Keys (Known Hosts)
 
@@ -863,6 +874,9 @@ Disconnected from SSH server
   from an older version starts with empty settings once (the settings area moved)
 - Flashing with "Erase flash" wipes settings; restore them with `storage` → *Restore*
 - If the device shows "Settings storage was unreadable and has been reset", restore a backup
+- "Installed without its settings partition": a launcher installed the `-release.bin` image or
+  the bare app. PocketSSH then saves into the launcher's own small settings area, which fills up
+  quickly. Back up with `storage`, install `PocketSSH-v<version>-launcher.bin` instead, and restore
 
 ### WiFi Connection Issues
 - Use `wifi` then *Scan and connect* to check the network is visible and pick it from the list
@@ -914,7 +928,8 @@ Disconnected from SSH server
 ### Release Firmware Image
 
 A ready-to-deploy **merged binary** includes the bootloader, partition table, and application:
-- **File**: `PocketSSH-v<version>-release.bin` (e.g. `PocketSSH-v1.3.0-release.bin`)
+- **File**: `PocketSSH-v<version>-release.bin` (e.g. `PocketSSH-v1.3.0-release.bin`). Using a
+  launcher? Take `PocketSSH-v<version>-launcher.bin` instead, see [Installing with a Launcher](#installing-with-a-launcher)
 - **Where to get it**:
   - **Releases**: the [Releases page](../../releases) has the image and its `.sha256` for each version
     (published automatically when a new version reaches `main`)
@@ -943,6 +958,24 @@ Flash firmware via browser using ESP Web Flasher:
 esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 build/PocketSSH-v1.3.0-release.bin
 ```
 
+### Installing with a Launcher
+
+Launchers such as [bmorcelli/Launcher](https://github.com/bmorcelli/Launcher) keep their own
+bootloader and partition table, so they can't take an image at `0x0`. Each release has a second
+image for them, **`PocketSSH-v<version>-launcher.bin`** (next to the `-release.bin`):
+
+1. Copy `PocketSSH-v<version>-launcher.bin` to the SD card
+2. In the launcher, open the SD card, pick the file and install it (the web UI works too)
+3. The launcher writes the app to a free slot and creates PocketSSH's `pocketssh` settings
+   partition (about 256-448 KB). PocketSSH starts; restart into the launcher as usual to switch apps
+
+To update, install the newer `-launcher.bin` the same way; the `pocketssh` partition and your
+settings are kept. The image holds the same app as the release image; only its partition
+table differs (`partitions_launcher.csv`). Installed from this image, PocketSSH never touches
+the launcher's own `nvs` settings. Installed from the `-release.bin` or the bare app instead, it
+has to fall back to that small shared area (a warning is shown at boot) and never erases it.
+The launcher runs before PocketSSH and can read or erase any partition - use one you trust.
+
 ## Building from Source
 
 Requires **ESP-IDF v5.5.1** (other 5.5.x patch releases should work).
@@ -951,6 +984,7 @@ Requires **ESP-IDF v5.5.1** (other 5.5.x patch releases should work).
 . $IDF_PATH/export.sh
 idf.py build
 idf.py merge-bin -o PocketSSH-v1.3.0-release.bin   # -> build/PocketSSH-v1.3.0-release.bin
+idf.py launcher-bin                                # -> build/PocketSSH-v<version>-launcher.bin
 # Optional: build with a specific version (reconfigure so CMake picks it up)
 FIRMWARE_VERSION=1.3.5 idf.py reconfigure build
 idf.py -p /dev/ttyACM0 flash monitor               # or flash the merged image at 0x0
@@ -979,7 +1013,7 @@ build, test on a T-Deck, and commit both files. The *Dependency check* workflow 
 
 | Workflow | When | What it does | Blocks merges? |
 |---|---|---|---|
-| **Build firmware** (`build.yml`) | Push to `main` / `integration`, pull requests, `v*` tags, manual *Run workflow* | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin` as a workflow artifact. Pushes to `main` release the next patch version automatically; manual runs choose the branch, bump or exact version (see *Releasing* below) | Yes - the firmware must build |
+| **Build firmware** (`build.yml`) | Push to `main` / `integration`, pull requests, `v*` tags, manual *Run workflow* | Builds with ESP-IDF v5.5.1 for the ESP32-S3 and uploads `PocketSSH-v<version>-release.bin` (flash at `0x0`) and `PocketSSH-v<version>-launcher.bin` (for launchers) as a workflow artifact. Pushes to `main` release the next patch version automatically; manual runs choose the branch, bump or exact version (see *Releasing* below) | Yes - the firmware must build |
 | **Code quality** (`code-quality.yml`) | Push to `main`, pull requests | cppcheck static analysis, flawfinder security lint, and compiler warnings in `main/`, shown as annotations on the changed lines and in each job's summary | No - report only |
 | **Dependency check** (`dependency-check.yml`) | Weekly, and when pins change | Compares pinned components and ESP-IDF with the latest releases | No - report only |
 | **Dependabot** (`.github/dependabot.yml`) | Weekly | Opens PRs to update the GitHub Actions used above | - |
@@ -988,7 +1022,8 @@ build, test on a T-Deck, and commit both files. The *Dependency check* workflow 
 
 - **Every merge/push to `main` publishes a release** with the next patch number
   (latest `v1.3.4` → `v1.3.5`). The release is titled "PocketSSH v1.3.5" and has the
-  notes, `PocketSSH-v1.3.5-release.bin` and its `.sha256`; the device shows the same version.
+  notes, `PocketSSH-v1.3.5-release.bin`, `PocketSSH-v1.3.5-launcher.bin` and their `.sha256`
+  files; the device shows the same version.
 - **Manual release**: Actions → *Build firmware* → *Run workflow*, then pick:
 
   | Field | Choices | Default |

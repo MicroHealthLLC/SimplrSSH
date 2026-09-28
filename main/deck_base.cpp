@@ -10,7 +10,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/queue.h"
-#include "nvs_flash.h"
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_check.h"
@@ -25,6 +24,7 @@
 #include "c3_keyboard.hpp"
 #include "ssh_terminal.hpp"
 #include "sd_card.hpp"
+#include "settings_nvs.hpp"
 
 #include "lvgl.h"
 
@@ -239,15 +239,7 @@ void device_init(void)
 extern "C" void app_main(void)
 {
     // NVS holds all saved settings; it is only reformatted if unreadable (reported on screen)
-    esp_err_t ret = nvs_flash_init();
-    bool settings_reformatted = false;
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGE(TAG, "NVS unreadable (%s), reformatting", esp_err_to_name(ret));
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-        settings_reformatted = true;
-    }
-    ESP_ERROR_CHECK(ret);
+    settings_nvs::InitResult settings_state = settings_nvs::init();
 
     /* Initialize device GPIOs */
     device_init();
@@ -312,9 +304,14 @@ extern "C" void app_main(void)
         ssh_terminal->append_text("Place .pem files in /sdcard/ssh_keys/\n\n");
     }
     
-    if (settings_reformatted) {
+    if (settings_state == settings_nvs::InitResult::REFORMATTED) {
         ssh_terminal->append_text("WARNING: Settings storage was unreadable and has been reset.\n"
                                   "Restore a backup with 'storage' if you have one.\n\n");
+    } else if (settings_state == settings_nvs::InitResult::SHARED) {
+        ssh_terminal->append_text("WARNING: Installed without its settings partition; saving in the\n"
+                                  "launcher's small storage. Install PocketSSH-*-launcher.bin instead.\n\n");
+    } else if (settings_state == settings_nvs::InitResult::UNAVAILABLE) {
+        ssh_terminal->append_text("WARNING: Settings storage is unavailable; nothing will be saved.\n\n");
     }
 
     // Update status bar to show initial battery voltage

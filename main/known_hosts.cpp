@@ -11,7 +11,7 @@
 
 #include "ssh_terminal.hpp"
 #include "esp_log.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include "mbedtls/base64.h"
 #include "mbedtls/md.h"
 #include <cstdio>
@@ -62,12 +62,12 @@ static std::vector<KnownHost> load_known_hosts()
 {
     std::vector<KnownHost> hosts;
     nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+    if (settings_nvs::open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         return hosts;
     }
 
     nvs_iterator_t it = NULL;
-    esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, NVS_NAMESPACE, NVS_TYPE_STR, &it);
+    esp_err_t err = nvs_entry_find(settings_nvs::partition(), NVS_NAMESPACE, NVS_TYPE_STR, &it);
     while (err == ESP_OK) {
         nvs_entry_info_t info;
         nvs_entry_info(it, &info);
@@ -125,7 +125,7 @@ SSHTerminal::HostKeyStatus SSHTerminal::check_host_key(const std::string& host, 
 
     std::string host_port = host_port_of(host, port);
     nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+    if (settings_nvs::open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
         return HostKeyStatus::Unknown;
     }
     char value[160];
@@ -152,7 +152,7 @@ esp_err_t SSHTerminal::save_host_key(const std::string& host, int port, const st
     std::string value = host_port + FIELD_SEP + key_type + FIELD_SEP + fingerprint;
 
     nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    esp_err_t err = settings_nvs::open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
         err = nvs_set_str(handle, nvs_key_for(host_port).c_str(), value.c_str());
         if (err == ESP_OK) {
@@ -264,7 +264,7 @@ bool SSHTerminal::host_step_input(const std::string& raw_input, const std::strin
             wizard_reset();
             if (yes) {
                 nvs_handle_t handle;
-                if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+                if (settings_nvs::open(NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
                     nvs_erase_key(handle, nvs_key_for(host_port).c_str());
                     nvs_commit(handle);
                     nvs_close(handle);

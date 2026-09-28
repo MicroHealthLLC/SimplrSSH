@@ -19,7 +19,7 @@
 #include "settings_backup.hpp"
 #include "secret_vault.hpp"
 #include "esp_log.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -101,11 +101,11 @@ static std::vector<Record> read_device_records()
     std::vector<Record> records;
     for (const char* ns : NAMESPACES) {
         nvs_handle_t handle;
-        if (nvs_open(ns, NVS_READONLY, &handle) != ESP_OK) {
+        if (settings_nvs::open(ns, NVS_READONLY, &handle) != ESP_OK) {
             continue;
         }
         nvs_iterator_t it = NULL;
-        esp_err_t err = nvs_entry_find(NVS_DEFAULT_PART_NAME, ns, NVS_TYPE_ANY, &it);
+        esp_err_t err = nvs_entry_find(settings_nvs::partition(), ns, NVS_TYPE_ANY, &it);
         while (err == ESP_OK) {
             nvs_entry_info_t info;
             nvs_entry_info(it, &info);
@@ -288,7 +288,7 @@ static void erase_namespaces()
 {
     for (const char* ns : NAMESPACES) {
         nvs_handle_t handle;
-        if (nvs_open(ns, NVS_READWRITE, &handle) == ESP_OK) {
+        if (settings_nvs::open(ns, NVS_READWRITE, &handle) == ESP_OK) {
             nvs_erase_all(handle);
             nvs_commit(handle);
             nvs_close(handle);
@@ -308,7 +308,7 @@ esp_err_t settings_backup::restore(const std::string& dir, Counts& counts)
     esp_err_t result = ESP_OK;
     for (const char* ns : NAMESPACES) {
         nvs_handle_t handle;
-        if (nvs_open(ns, NVS_READWRITE, &handle) != ESP_OK) {
+        if (settings_nvs::open(ns, NVS_READWRITE, &handle) != ESP_OK) {
             result = ESP_FAIL;
             continue;
         }

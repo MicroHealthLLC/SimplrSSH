@@ -17,7 +17,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
-#include "nvs.h"
+#include "settings_nvs.hpp"
 #include <algorithm>
 #include <cstdio>
 
@@ -54,7 +54,7 @@ static std::string lower(std::string s)
 void SSHTerminal::chat_load_settings()
 {
     nvs_handle_t h;
-    if (nvs_open("chat", NVS_READONLY, &h) != ESP_OK) {
+    if (settings_nvs::open("chat", NVS_READONLY, &h) != ESP_OK) {
         return;
     }
     char model[64];
@@ -72,7 +72,7 @@ void SSHTerminal::chat_load_settings()
 void SSHTerminal::chat_save_settings()
 {
     nvs_handle_t h;
-    esp_err_t err = nvs_open("chat", NVS_READWRITE, &h);
+    esp_err_t err = settings_nvs::open("chat", NVS_READWRITE, &h);
     if (err == ESP_OK) {
         err = nvs_set_str(h, "model", chat_model.c_str());
         if (err == ESP_OK) {

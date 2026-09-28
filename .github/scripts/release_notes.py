@@ -5,9 +5,9 @@ Build GitHub release notes for a firmware version.
 Uses the "### v<version>" section from README.md's Version History when there is
 one; otherwise (e.g. automatic patch releases) the notes point to the change list
 GitHub generates from the commits and pull requests since the previous release,
-which the workflow appends below. Adds flashing instructions and the image checksum.
+which the workflow appends below. Adds install instructions and the image checksums.
 
-Usage: release_notes.py <version> <image-file-name> <sha256> <output.md>
+Usage: release_notes.py <version> <image> <sha256> <launcher-image> <launcher-sha256> <output.md>
 """
 
 import re
@@ -30,10 +30,10 @@ def version_section(readme, version):
 
 
 def main():
-    if len(sys.argv) != 5:
+    if len(sys.argv) != 7:
         print(__doc__)
         return 2
-    version, image, sha256, output = sys.argv[1:]
+    version, image, sha256, launcher_image, launcher_sha256, output = sys.argv[1:]
 
     with open("README.md", encoding="utf-8") as f:
         title, changes = version_section(f.read(), version)
@@ -57,6 +57,15 @@ Download **`{image}`** below and flash it to the LilyGO T-Deck / T-Deck Plus at 
   ```
 
 SHA-256: `{sha256}` (also in `{image}.sha256`; check with `sha256sum -c {image}.sha256`)
+
+### With a launcher (bmorcelli/Launcher)
+
+If the T-Deck runs a launcher, copy **`{launcher_image}`** to its SD card and install it from
+the launcher's SD menu (or its web UI). The launcher puts the app in a free slot and creates
+PocketSSH's own `pocketssh` settings partition, which is kept when you install a newer version
+the same way. Without a launcher, use `{image}` above.
+
+SHA-256: `{launcher_sha256}` (also in `{launcher_image}.sha256`)
 """
     with open(output, "w", encoding="utf-8") as f:
         f.write(notes)
