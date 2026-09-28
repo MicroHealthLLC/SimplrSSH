@@ -33,6 +33,12 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 ## Version History
 
 ### Unreleased
+- **Fixed**: ChatGPT *Model* lists the models OpenAI offers your key right now (newest first)
+  instead of a fixed list that went out of date; your pick is kept for every chat until you change it.
+  Voice and the default chat model follow OpenAI's newest models, so retired ones need no update
+- **Fixed**: API keys from `openai.key` with a byte-order mark or extra lines, or saved as
+  `openai.key.txt`, were refused. A saved key is now read back to confirm it and checked with
+  OpenAI, and OpenAI's own reason is shown if it rejects a key
 - **Fixed**: The SD card could become unreadable right after PocketSSH started. At boot the
   board's peripheral power briefly dropped and the card was read before its power had settled;
   power now comes up cleanly and the card is left alone until it is ready (read-only, 10 MHz)
@@ -280,8 +286,10 @@ Model: gpt-4o-mini | Key: saved | Spoken replies: off
 **First time**: *Chat* asks for your API key (from platform.openai.com → API keys):
 *Type it*, or - easier on the T-Deck keyboard - put the key alone in a file named
 `openai.key` at the top of the SD card and choose *Load from SD card*. The key is saved
-encrypted on the device (PIN-protected if you've set a PIN), and you're offered to delete the
-file from the card.
+encrypted on the device (PIN-protected if you've set a PIN), read back to check it saved
+correctly (its length and last 4 characters are shown), then checked with OpenAI - if OpenAI
+refuses it, its exact reason is shown. You're offered to delete the file from the card.
+`openai.key.txt` (Windows hiding the extension) and a byte-order mark from Notepad are fine.
 
 **Chatting**: your messages appear on the right, replies on the left as they're written; the
 input line stays at the bottom. There is one chat session; it's kept until you clear it or
@@ -295,10 +303,16 @@ restart. Type these words alone as commands:
 
 **Voice**: **hold the trackball** and speak; the input line shows `* Recording 3s - release to
 send`. Let go to send: the T-Deck microphone recording (up to 30 s) is transcribed by OpenAI
-Whisper and sent to the model. Turn on *Spoken replies* to hear answers through the speaker.
+(newest speech-to-text model) and sent to the model. Turn on *Spoken replies* to hear answers through the speaker.
 
-**Model**: gpt-4o-mini (default, fast and low cost), gpt-4.1-mini, gpt-4.1-nano, gpt-4o, or type
-any other model name. Replies are kept short and plain for the small screen.
+**Model**: *Model* asks OpenAI which chat models your key can use and lists them newest first
+(or type any model name). The model you pick is saved exactly as OpenAI names it and used for
+every chat until you change it - PocketSSH never switches it on its own; if it disappears from
+OpenAI's list you're told to pick another. Until you pick one, the newest low-cost ("mini") chat
+model OpenAI offers is used. Voice works the same way: the newest speech-to-text and
+text-to-speech models are picked from OpenAI's list, so retired models are replaced without a
+firmware update. The list is checked once per start-up, the first time you use ChatGPT.
+Replies are kept short and plain for the small screen.
 
 > **Privacy**: messages and voice recordings are sent to OpenAI (api.openai.com, HTTPS with
 > certificate verification) only while you use ChatGPT, and billed to your API key.

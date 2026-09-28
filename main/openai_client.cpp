@@ -7,6 +7,10 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "cJSON.h"
+#include "esp_heap_caps.h"
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 static const char *TAG = "OPENAI";
@@ -18,13 +22,16 @@ static const char *SYSTEM_PROMPT =
     "Answer briefly in plain text: no markdown, tables or code fences unless asked.";
 static const int MAX_REPLY_TOKENS = 600;
 
-static esp_http_client_handle_t open_post(const char* path, const std::string& key,
-                                          const char* content_type, int length)
+static const size_t MAX_MODELS_RESPONSE = 256 * 1024;  // The model list is ~30 KB; kept in PSRAM
+static const size_t MAX_MODELS = 40;
+
+static esp_http_client_handle_t open_request(esp_http_client_method_t method, const char* path, const std::string& key,
+                                             const char* content_type, int length)
 {
     std::string url = std::string(API) + path;
     esp_http_client_config_t cfg = {};
     cfg.url = url.c_str();
-    cfg.method = HTTP_METHOD_POST;
+    cfg.method = method;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
     cfg.timeout_ms = 60000;
     cfg.buffer_size = 1024;
@@ -35,12 +42,19 @@ static esp_http_client_handle_t open_post(const char* path, const std::string& k
     }
     std::string auth = "Bearer " + key;
     esp_http_client_set_header(client, "Authorization", auth.c_str());
-    esp_http_client_set_header(client, "Content-Type", content_type);
+    if (content_type) {
+        esp_http_client_set_header(client, "Content-Type", content_type);
+    }
     if (esp_http_client_open(client, length) != ESP_OK) {
         esp_http_client_cleanup(client);
         return NULL;
     }
     return client;
+}
+
+static esp_http_client_handle_t open_post(const char* path, const std::string& key, const char* content_type, int length)
+{
+    return open_request(HTTP_METHOD_POST, path, key, content_type, length);
 }
 
 static bool write_all(esp_http_client_handle_t client, const void* data, size_t len)
@@ -77,7 +91,7 @@ static bool check_status(esp_http_client_handle_t client, std::string& error)
     cJSON_Delete(json);
 
     if (status == 401) {
-        error = "API key rejected - set it in ChatGPT > API key";
+        error = "OpenAI rejected the API key" + (detail.empty() ? std::string(".") : ": " + detail.substr(0, 160));
     } else if (status == 429) {
         error = "Rate limit or no credit on the OpenAI account";
     } else {
@@ -164,11 +178,11 @@ esp_err_t openai::chat(const std::string& key, const std::string& model, const s
     return finish(client, true);
 }
 
-esp_err_t openai::transcribe(const std::string& key, const int16_t* pcm, size_t samples, uint32_t rate,
-                             std::string& text, std::string& error)
+esp_err_t openai::transcribe(const std::string& key, const std::string& model, const int16_t* pcm, size_t samples,
+                             uint32_t rate, std::string& text, std::string& error)
 {
     static const char* B = "----pocketsshAudioBoundary";
-    std::string head = std::string("--") + B + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nwhisper-1\r\n" +
+    std::string head = std::string("--") + B + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" + model + "\r\n" +
                        "--" + B + "\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n" +
                        "--" + B + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n" +
                        "Content-Type: audio/wav\r\n\r\n";
@@ -210,11 +224,11 @@ esp_err_t openai::transcribe(const std::string& key, const int16_t* pcm, size_t 
     return finish(client, true);
 }
 
-esp_err_t openai::speak(const std::string& key, const std::string& text,
+esp_err_t openai::speak(const std::string& key, const std::string& model, const std::string& text,
                         const std::function<void(const uint8_t*, size_t)>& on_audio, std::string& error)
 {
     cJSON* root = cJSON_CreateObject();
-    cJSON_AddStringToObject(root, "model", "gpt-4o-mini-tts");
+    cJSON_AddStringToObject(root, "model", model.c_str());
     cJSON_AddStringToObject(root, "voice", "alloy");
     cJSON_AddStringToObject(root, "response_format", "pcm");
     cJSON_AddStringToObject(root, "input", text.substr(0, 2000).c_str());
@@ -240,4 +254,157 @@ esp_err_t openai::speak(const std::string& key, const std::string& text,
     }
     ESP_LOGI(TAG, "Speech done");
     return finish(client, true);
+}
+
+// Raw value of "name": in one flat JSON object (string contents, or the number text)
+static std::string json_field(const char* obj, const char* end, const char* name)
+{
+    std::string pattern = std::string("\"") + name + "\"";
+    const char* p = std::search(obj, end, pattern.begin(), pattern.end());
+    if (p == end) {
+        return "";
+    }
+    p += pattern.size();
+    while (p < end && (*p == ' ' || *p == ':' || *p == '\n' || *p == '\r' || *p == '\t')) {
+        p++;
+    }
+    const char* start = p;
+    if (p < end && *p == '"') {
+        start = ++p;
+        while (p < end && *p != '"') {
+            p++;
+        }
+    } else {
+        while (p < end && isdigit((unsigned char)*p)) {
+            p++;
+        }
+    }
+    return std::string(start, p - start);
+}
+
+// Dated snapshots (gpt-4o-2024-08-06, gpt-4-0613) duplicate the plain names
+static bool is_snapshot(const std::string& id)
+{
+    size_t dash = id.rfind('-');
+    std::string last = dash == std::string::npos ? "" : id.substr(dash + 1);
+    return last.size() >= 2 && std::all_of(last.begin(), last.end(), ::isdigit);
+}
+
+static bool contains(const std::string& id, const char* part)
+{
+    return id.find(part) != std::string::npos;
+}
+
+// Models the Chat Completions API can talk to (not audio, image, embedding or dated snapshots)
+static bool is_chat_model(const std::string& id)
+{
+    bool family = id.rfind("gpt-", 0) == 0 || id.rfind("chatgpt-", 0) == 0 ||
+                  (id.size() > 1 && id[0] == 'o' && isdigit((unsigned char)id[1]));
+    if (!family || id.size() > 60) {
+        return false;
+    }
+    for (const char* skip : {"realtime", "audio", "transcribe", "tts", "search", "image", "instruct",
+                             "embedding", "moderation", "codex", "-pro", "computer-use", "deep-research"}) {
+        if (id.find(skip) != std::string::npos) {
+            return false;
+        }
+    }
+    if (is_snapshot(id)) {
+        return false;
+    }
+    for (char c : id) {
+        if (!isalnum((unsigned char)c) && c != '-' && c != '.' && c != '_' && c != ':') {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Speech-to-text models that take a plain upload (not realtime or diarizing ones)
+static bool is_transcribe_model(const std::string& id)
+{
+    return (contains(id, "transcribe") || id.rfind("whisper", 0) == 0) && !contains(id, "realtime") &&
+           !contains(id, "diarize") && !is_snapshot(id);
+}
+
+static bool is_speech_model(const std::string& id)
+{
+    return contains(id, "tts") && !contains(id, "realtime") && !is_snapshot(id);
+}
+
+// Newest (list is newest first) whose name has "mini" - the low-cost tier - else the newest
+static std::string pick_newest(const std::vector<std::string>& ids)
+{
+    for (const auto& id : ids) {
+        if (contains(id, "mini")) {
+            return id;
+        }
+    }
+    return ids.empty() ? "" : ids.front();
+}
+
+esp_err_t openai::list_models(const std::string& key, Models& out, std::string& error)
+{
+    out = Models();
+    std::vector<std::string>& models = out.chat;
+    esp_http_client_handle_t client = open_request(HTTP_METHOD_GET, "models", key, NULL, 0);
+    if (!client) {
+        error = "Can't reach OpenAI (check WiFi)";
+        return ESP_FAIL;
+    }
+    if (!check_status(client, error)) {
+        return finish(client, false);
+    }
+
+    char* body = (char*)heap_caps_malloc(MAX_MODELS_RESPONSE, MALLOC_CAP_SPIRAM);
+    if (!body) {
+        error = "Out of memory";
+        return finish(client, false);
+    }
+    size_t len = 0;
+    int n;
+    while (len < MAX_MODELS_RESPONSE && (n = esp_http_client_read(client, body + len, MAX_MODELS_RESPONSE - len)) > 0) {
+        len += n;
+    }
+    finish(client, true);
+
+    // {"object":"list","data":[{"id":"...","object":"model","created":123,"owned_by":"..."}, ...]}
+    std::vector<std::pair<long long, std::string>> found;  // Every model, (created, id)
+    const char* start = body;
+    const char* end = body + len;
+    const char* data = "\"data\"";
+    const char* p = std::search(start, end, data, data + strlen(data));
+    while (p < end && found.size() < 400) {
+        const char* open = std::find(p, end, '{');
+        const char* close = std::find(open, end, '}');
+        if (close == end) {
+            break;
+        }
+        std::string id = json_field(open, close, "id");
+        if (!id.empty() && id.size() <= 60) {
+            found.push_back({atoll(json_field(open, close, "created").c_str()), id});
+        }
+        p = close + 1;
+    }
+    heap_caps_free(body);
+
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    std::vector<std::string> transcribe, speech;
+    for (const auto& f : found) {
+        if (is_chat_model(f.second) && models.size() < MAX_MODELS) {
+            models.push_back(f.second);
+        } else if (is_transcribe_model(f.second)) {
+            transcribe.push_back(f.second);
+        } else if (is_speech_model(f.second)) {
+            speech.push_back(f.second);
+        }
+    }
+    out.chat_default = pick_newest(models);
+    out.transcribe = pick_newest(transcribe);
+    out.speech = pick_newest(speech);
+    if (models.empty()) {
+        error = "OpenAI listed no chat models for this key";
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
