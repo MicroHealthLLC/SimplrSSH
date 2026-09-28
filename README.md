@@ -33,6 +33,9 @@ A portable SSH terminal client for the ESP32-S3 T-Deck Plus, featuring a hardwar
 ## Version History
 
 ### Unreleased
+- **Fixed**: The SD card could become unreadable right after PocketSSH started. At boot the
+  board's peripheral power briefly dropped and the card was read before its power had settled;
+  power now comes up cleanly and the card is left alone until it is ready (read-only, 10 MHz)
 - **Fixed**: The SD card could get corrupted (needing a reformat) after PocketSSH read it.
   After each use the card's chip-select pin was left floating, so the card could take display
   traffic on the shared SPI lines as commands and write garbage. It is now held deselected.
