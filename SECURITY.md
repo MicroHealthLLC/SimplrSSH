@@ -1,6 +1,6 @@
 # Security
 
-PocketSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3). Its job is to join a
+SimplrSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3). Its job is to join a
 WiFi network the user picks, open SSH sessions to servers the user enters, and - only when
 the user opens ChatGPT with their own API key - talk to api.openai.com. It should talk to
 nothing else.
@@ -94,10 +94,10 @@ encryption, for devices that may be lost.
 - A server that adds a new host key type can trigger a "key changed" refusal; verify, then
   `hosts forget`.
 - **Installed with a launcher** (`-launcher.bin`, e.g. bmorcelli/Launcher): the launcher's own
-  code runs first, before PocketSSH, and can read, back up, restore and erase every partition,
-  including PocketSSH's `pocketssh` settings partition (the vault stays encrypted; without a
+  code runs first, before SimplrSSH, and can read, back up, restore and erase every partition,
+  including SimplrSSH's `simplrssh` settings partition (the vault stays encrypted; without a
   PIN its key is in the same partition). Only use a launcher you trust, and set a PIN.
-  Installed from `-launcher.bin`, PocketSSH never touches the launcher's `nvs`; installed from
+  Installed from `-launcher.bin`, SimplrSSH never touches the launcher's `nvs`; installed from
   an image without its own partition it has to store its settings there (warned at boot) and
   never erases it.
 - `skuodi/libssh2_esp` tracks a libssh2 development snapshot rather than a tagged release.

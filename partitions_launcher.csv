@@ -1,12 +1,12 @@
-# Partition table of PocketSSH-v<version>-launcher.bin, the image for launchers such as
+# Partition table of SimplrSSH-v<version>-launcher.bin, the image for launchers such as
 # bmorcelli/Launcher (build: `idf.py launcher-bin`). The direct-flash layout is partitions.csv.
 # A launcher keeps its own bootloader, partition table and "nvs"; from this table it installs
-# the app into a free slot and creates the "pocketssh" data partition, which it keeps across
-# updates. PocketSSH stores all settings there as NVS (main/settings_nvs.cpp). Launchers only
-# create SPIFFS/LittleFS/FAT data partitions, hence the spiffs subtype. "pocketssh" comes
+# the app into a free slot and creates the "simplrssh" data partition, which it keeps across
+# updates. SimplrSSH stores all settings there as NVS (main/settings_nvs.cpp). Launchers only
+# create SPIFFS/LittleFS/FAT data partitions, hence the spiffs subtype. "simplrssh" comes
 # before the app so the image contains it (erased, 0xFF): Launcher's web installer skips
 # partitions that lie past the end of the file. The app offset must match LAUNCHER_APP_OFFSET
 # in CMakeLists.txt. Offsets only describe this image: the launcher decides where things go.
 # Name,    Type, SubType, Offset,   Size,    Flags
-pocketssh, data, spiffs,  0x10000,  0x40000,
+simplrssh, data, spiffs,  0x10000,  0x40000,
 factory,   app,  factory, 0x50000,  9M,

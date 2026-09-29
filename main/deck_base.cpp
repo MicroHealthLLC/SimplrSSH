@@ -1,6 +1,6 @@
 /*
  * Deck Base Application
- * Main application entry point for PocketSSH. Initializes hardware peripherals including
+ * Main application entry point for SimplrSSH. Initializes hardware peripherals including
  * GPIO, display, touch input, and manages FreeRTOS tasks for keyboard input and trackball navigation.
  */
 
@@ -279,10 +279,10 @@ extern "C" void app_main(void)
     lv_screen_load(ssh_screen);
     
     // Display version and initial instructions
-#ifdef POCKETSSH_VERSION
-    ssh_terminal->append_text("PocketSSH v" POCKETSSH_VERSION "\n");
+#ifdef SIMPLRSSH_VERSION
+    ssh_terminal->append_text("SimplrSSH v" SIMPLRSSH_VERSION "\n");
 #else
-    ssh_terminal->append_text("PocketSSH Terminal Ready\n");
+    ssh_terminal->append_text("SimplrSSH Terminal Ready\n");
 #endif
 
     ssh_terminal->print_saved_summary();
@@ -307,7 +307,7 @@ extern "C" void app_main(void)
                                   "Restore a backup with 'storage' if you have one.\n\n");
     } else if (settings_state == settings_nvs::InitResult::SHARED) {
         ssh_terminal->append_text("WARNING: Installed without its settings partition; saving in the\n"
-                                  "launcher's small storage. Install PocketSSH-*-launcher.bin instead.\n\n");
+                                  "launcher's small storage. Install SimplrSSH-*-launcher.bin instead.\n\n");
     } else if (settings_state == settings_nvs::InitResult::UNAVAILABLE) {
         ssh_terminal->append_text("WARNING: Settings storage is unavailable; nothing will be saved.\n\n");
     }

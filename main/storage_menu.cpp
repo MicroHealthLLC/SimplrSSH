@@ -11,10 +11,25 @@
 #include "settings_backup.hpp"
 #include "sd_card.hpp"
 #include <algorithm>
+#include <sys/stat.h>
 
+// Backups are written to /simplrssh; call only while the card is mounted
 static std::string backup_dir()
 {
-    return std::string(sdcard::MOUNT_POINT) + "/pocketssh";
+    return std::string(sdcard::MOUNT_POINT) + "/simplrssh";
+}
+
+// Where to read a backup from: /simplrssh, or /pocketssh (made before the rename) if only
+// that one has a backup. Call only while the card is mounted.
+static std::string restore_dir()
+{
+    struct stat st;
+    std::string legacy = std::string(sdcard::MOUNT_POINT) + "/pocketssh";
+    if (stat((backup_dir() + "/settings.dat").c_str(), &st) != 0 &&
+        stat((legacy + "/settings.dat").c_str(), &st) == 0) {
+        return legacy;
+    }
+    return backup_dir();
 }
 
 static std::string plural(int n, const char* word)
@@ -70,7 +85,7 @@ void SSHTerminal::storage_backup()
 
     if (err == ESP_OK) {
         append_text(("Backed up " + describe(c) + " and " + plural(c.vault_files, "saved password") +
-                     " (encrypted) to /pocketssh on the SD card.\n").c_str());
+                     " (encrypted) to /simplrssh on the SD card.\n").c_str());
     } else {
         append_text("ERROR: Backup failed (card full or write-protected?). The old backup is unchanged.\n");
     }
@@ -89,7 +104,7 @@ void SSHTerminal::storage_restore()
         return;
     }
     settings_backup::Counts c;
-    esp_err_t err = settings_backup::restore(backup_dir(), c);
+    esp_err_t err = settings_backup::restore(restore_dir(), c);
     sdcard::unmount();
 
     if (err == ESP_ERR_INVALID_STATE) {
@@ -154,7 +169,7 @@ bool SSHTerminal::storage_step_prompt()
             refresh_display_now();
             if (sdcard::mount() == ESP_OK) {
                 settings_backup::Counts sd;
-                bool has_backup = settings_backup::read_backup_counts(backup_dir(), sd);
+                bool has_backup = settings_backup::read_backup_counts(restore_dir(), sd);
                 sdcard::unmount();
                 append_text(has_backup ? ("SD card backup: " + describe(sd) + "\n").c_str()
                                        : "SD card: inserted, no backup yet\n");

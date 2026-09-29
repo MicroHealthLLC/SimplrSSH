@@ -46,7 +46,7 @@ bool SSHTerminal::home_step_prompt()
             std::string status = wifi_connected ? "WiFi: " + wifi_ssid : std::string("WiFi: off");
             status += " | Saved: " + std::to_string(saved_networks.size()) + " WiFi, " +
                       std::to_string(profiles.size()) + " SSH";
-            append_text(("\n== PocketSSH ==\n" + status + "\n").c_str());
+            append_text(("\n== SimplrSSH ==\n" + status + "\n").c_str());
             append_text(" 1) WiFi\n"
                         " 2) SSH servers\n"
                         " 3) ChatGPT\n"

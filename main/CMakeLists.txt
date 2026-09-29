@@ -52,4 +52,4 @@ idf_component_register(
 )
 
 # Add version number as compile definition
-target_compile_definitions(${COMPONENT_LIB} PRIVATE POCKETSSH_VERSION="${PROJECT_VER}")
+target_compile_definitions(${COMPONENT_LIB} PRIVATE SIMPLRSSH_VERSION="${PROJECT_VER}")

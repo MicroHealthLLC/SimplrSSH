@@ -2,8 +2,8 @@
 """
 Build GitHub release notes for a firmware version.
 
-Uses the "### v<version>" section from README.md's Version History when there is
-one; otherwise (e.g. automatic patch releases) the notes point to the change list
+Uses a "### v<version>" section from README.md when there is one (optional; the
+README normally has none); otherwise (e.g. automatic patch releases) the notes point to the change list
 GitHub generates from the commits and pull requests since the previous release,
 which the workflow appends below. Adds install instructions and the image checksums.
 
@@ -40,7 +40,7 @@ def main():
     if changes:
         whats_new = f"## What's new in {title}\n\n{changes}\n"
     else:
-        whats_new = (f"## PocketSSH v{version}\n\n"
+        whats_new = (f"## SimplrSSH v{version}\n\n"
                      "The changes in this release are listed under *What's Changed* below.\n")
 
     notes = f"""{whats_new}
@@ -62,7 +62,7 @@ SHA-256: `{sha256}` (also in `{image}.sha256`; check with `sha256sum -c {image}.
 
 If the T-Deck runs a launcher, copy **`{launcher_image}`** to its SD card and install it from
 the launcher's SD menu (or its web UI). The launcher puts the app in a free slot and creates
-PocketSSH's own `pocketssh` settings partition, which is kept when you install a newer version
+SimplrSSH's own `simplrssh` settings partition, which is kept when you install a newer version
 the same way. Without a launcher, use `{image}` above.
 
 SHA-256: `{launcher_sha256}` (also in `{launcher_image}.sha256`)

@@ -1,6 +1,6 @@
-# PocketSSH - rules for AI assistants and contributors
+# SimplrSSH - rules for AI assistants and contributors
 
-PocketSSH is firmware for the **LilyGO T-Deck / T-Deck Plus** (ESP32-S3, 240 MHz dual core,
+SimplrSSH is firmware for the **LilyGO T-Deck / T-Deck Plus** (ESP32-S3, 240 MHz dual core,
 ~340 KB usable internal RAM, 8 MB PSRAM, 16 MB flash). Its job: **configure WiFi, SSH into
 servers with common terminal-client features, and chat with ChatGPT by text or voice**, on a
 320x240 screen with a small keyboard and trackball. Every change should serve that job.
@@ -70,12 +70,14 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   `partitions.csv` so flashing the merged image at 0x0 never erases it. Never move it before
   the app or shrink it; changing its offset wipes users' settings.
 - Launcher installs (`-launcher.bin`, `partitions_launcher.csv`, e.g. bmorcelli/Launcher) keep the
-  launcher's bootloader, table and `nvs`; settings go in our own `pocketssh` data partition
+  launcher's bootloader, table and `nvs`; settings go in our own `simplrssh` data partition
   (spiffs subtype, NVS contents - launchers only create SPIFFS/LittleFS/FAT). Always open
   namespaces with `settings_nvs::open()` and iterate with `settings_nvs::partition()`, never
   `nvs_open()` / `NVS_DEFAULT_PART_NAME`. Never erase a launcher's `nvs`. Keep the partition's
   label, and keep it inside the image (before the app): Launcher's web installer skips
-  partitions past the end of the file.
+  partitions past the end of the file. Installs from before the rename have a `pocketssh`
+  partition, `/pocketssh` SD backups and a `POCKETSSH-BACKUP 1` header; keep reading those
+  (`settings_nvs.cpp`, `storage_menu.cpp`, `settings_backup.cpp`) so their settings survive.
 - "It just works" beats extra prompts: don't make saving depend on an optional step (like a
   PIN). Optional hardening must be opt-in.
 - New persistent data goes in NVS namespaces listed in `settings_backup.cpp` (so backup,
@@ -106,7 +108,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
 | `main/vault_menu.cpp`, `main/secret_vault.cpp` | Encrypted password storage (NVS), optional PIN |
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
-| `main/settings_nvs.cpp` | Picks and opens the settings partition (`nvs` or a launcher's `pocketssh`) |
+| `main/settings_nvs.cpp` | Picks and opens the settings partition (`nvs` or a launcher's `simplrssh`) |
 | `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
 | `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |
 | `main/home_menu.cpp` | Home and Security menus, `go_home()` |
@@ -114,8 +116,8 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 
 ## Workflow
 
-- Build: ESP-IDF v5.5.1, `idf.py build`, release image `idf.py merge-bin -o PocketSSH-v<ver>-release.bin`,
-  launcher image `idf.py launcher-bin` (-> `build/PocketSSH-v<ver>-launcher.bin`).
+- Build: ESP-IDF v5.5.1, `idf.py build`, release image `idf.py merge-bin -o SimplrSSH-v<ver>-release.bin`,
+  launcher image `idf.py launcher-bin` (-> `build/SimplrSSH-v<ver>-launcher.bin`).
 - Match the surrounding style (4-space indent, `snake_case`, brace on its own line for
   functions, same line for control flow).
 - CI must build; the code-quality workflow is advisory but aim for zero new warnings.
@@ -123,6 +125,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   passes `FIRMWARE_VERSION` to the build. Every push to `main` releases the next patch;
   manual runs pick branch (`main`/`integration` = pre-release), bump or exact version.
   Don't hand-edit versions for patch releases. Work on `integration`, merge to `main` to
-  release. A `### vX.Y.Z (<date>)` Version History section is optional release-note text.
+  release. The README has no version history (keep it to install/configure/use); release
+  notes are GitHub's generated change list, or an optional `### vX.Y.Z (<date>)` README section.
 - Update README.md (user-facing behavior) and SECURITY.md (anything security-relevant) with
   the change. Hardware behavior can only be confirmed on a real T-Deck; say so when it hasn't been.

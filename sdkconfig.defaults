@@ -1,4 +1,4 @@
-# PocketSSH: deliberate settings for the LilyGO T-Deck (ESP32-S3, 8 MB PSRAM).
+# SimplrSSH: deliberate settings for the LilyGO T-Deck (ESP32-S3, 8 MB PSRAM).
 # Keep these lean and minimal-attack-surface; see CLAUDE.md. ESP-IDF applies
 # this file only to options missing from sdkconfig, so when changing one here,
 # also remove it from sdkconfig (or run `idf.py menuconfig`) and commit both.

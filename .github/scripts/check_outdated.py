@@ -21,7 +21,7 @@ IDF_RELEASE_API = "https://api.github.com/repos/espressif/esp-idf/releases/lates
 
 
 def fetch_json(url):
-    request = urllib.request.Request(url, headers={"User-Agent": "pocketssh-dependency-check"})
+    request = urllib.request.Request(url, headers={"User-Agent": "simplrssh-dependency-check"})
     token = os.environ.get("GITHUB_TOKEN")
     if token and "api.github.com" in url:
         request.add_header("Authorization", f"Bearer {token}")

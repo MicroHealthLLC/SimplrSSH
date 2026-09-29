@@ -2,7 +2,8 @@
  * Settings Backup Implementation
  *
  * settings.dat:
- *   POCKETSSH-BACKUP 1 <profiles> <networks> <hosts> <history>
+ *   SIMPLRSSH-BACKUP 1 <profiles> <networks> <hosts> <history>
+ *   (backups made before the rename start with POCKETSSH-BACKUP 1 and are still read)
  *   <namespace> <key> s <hex string value>
  *   <namespace> <key> u <decimal u32 value>
  *   <namespace> <key> b <hex blob>            (encrypted vault records)
@@ -30,7 +31,8 @@
 static const char *TAG = "BACKUP";
 
 static const char* const NAMESPACES[] = {"profiles", "wifi_nets", "known_hosts", "storage", "vault", "chat"};
-static const char* const HEADER = "POCKETSSH-BACKUP 1";
+static const char* const HEADER = "SIMPLRSSH-BACKUP 1";
+static const char* const LEGACY_HEADER = "POCKETSSH-BACKUP 1";   // Same format, older name
 static const size_t MAX_LINE = 8300;     // "ns key s " + hex of a 4000-byte string
 static const size_t MAX_RECORDS = 1000;
 static const size_t MAX_BLOB = 1024;
@@ -204,6 +206,18 @@ esp_err_t settings_backup::backup(const std::string& dir, Counts& counts)
     return ESP_OK;
 }
 
+// Length of the header the line starts with (current or legacy), or 0 if neither
+static size_t header_length(const std::string& line)
+{
+    if (line.rfind(HEADER, 0) == 0) {
+        return strlen(HEADER);
+    }
+    if (line.rfind(LEGACY_HEADER, 0) == 0) {
+        return strlen(LEGACY_HEADER);
+    }
+    return 0;
+}
+
 static bool read_line(FILE* f, std::string& line)
 {
     line.clear();
@@ -227,8 +241,9 @@ bool settings_backup::read_backup_counts(const std::string& dir, Counts& counts)
         return false;
     }
     std::string line;
-    bool ok = read_line(f, line) && line.rfind(HEADER, 0) == 0 &&
-              sscanf(line.c_str() + strlen(HEADER), "%d %d %d %d", &counts.profiles, &counts.networks,
+    size_t header = 0;
+    bool ok = read_line(f, line) && (header = header_length(line)) > 0 &&
+              sscanf(line.c_str() + header, "%d %d %d %d", &counts.profiles, &counts.networks,
                      &counts.hosts, &counts.history) == 4;
     fclose(f);
     return ok;
@@ -241,7 +256,7 @@ static bool parse_settings(const std::string& path, std::vector<Record>& records
         return false;
     }
     std::string line;
-    bool ok = read_line(f, line) && line.rfind(HEADER, 0) == 0;
+    bool ok = read_line(f, line) && header_length(line) > 0;
 
     while (ok && read_line(f, line)) {
         if (records.size() >= MAX_RECORDS) {
