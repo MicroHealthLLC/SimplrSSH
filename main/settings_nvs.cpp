@@ -1,8 +1,10 @@
 /*
  * Settings NVS Implementation
  * Picks the partition that holds the saved settings (see settings_nvs.hpp):
- *   "pocketssh" (any data subtype)  installed by a launcher from the -launcher.bin image;
+ *   "simplrssh" (any data subtype)  installed by a launcher from the -launcher.bin image;
  *                                   ours, so reformatted if unreadable
+ *   "pocketssh" (any data subtype)  same, created by an image from before the rename to
+ *                                   SimplrSSH; still used so those settings are kept
  *   "nvs", app in "factory"         flashed directly at 0x0; ours, reformatted if unreadable
  *   "nvs", app elsewhere (ota_N)    a launcher's own settings; used as-is, never erased
  */
@@ -12,10 +14,12 @@
 #include "esp_partition.h"
 #include "esp_ota_ops.h"
 #include "esp_log.h"
+#include <initializer_list>
 
 static const char *TAG = "SETTINGS";
 
-static const char* const OWN_LABEL = "pocketssh";
+static const char* const OWN_LABEL = "simplrssh";
+static const char* const LEGACY_LABEL = "pocketssh";   // Label used before the rename
 static const size_t MIN_SIZE = 0x4000;   // NVS needs a few 4 KB pages to be useful
 static const char* active_label = NVS_DEFAULT_PART_NAME;
 
@@ -45,10 +49,14 @@ static settings_nvs::InitResult init_own(const esp_partition_t* part)
 
 settings_nvs::InitResult settings_nvs::init()
 {
-    const esp_partition_t* own = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, OWN_LABEL);
-    if (own && own->size >= MIN_SIZE) {
-        active_label = OWN_LABEL;
-        return init_own(own);
+    // The legacy partition is checked first: if a launcher kept it next to a new, empty one,
+    // it still holds the user's settings
+    for (const char* label : {LEGACY_LABEL, OWN_LABEL}) {
+        const esp_partition_t* own = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_ANY, label);
+        if (own && own->size >= MIN_SIZE) {
+            active_label = label;
+            return init_own(own);
+        }
     }
 
     const esp_partition_t* nvs = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS,
@@ -64,7 +72,7 @@ settings_nvs::InitResult settings_nvs::init()
         return init_own(nvs);
     }
 
-    // Installed by a launcher from an image without the "pocketssh" partition
+    // Installed by a launcher from an image without the "simplrssh" partition
     ESP_LOGW(TAG, "Using the launcher's nvs partition");
     esp_err_t err = nvs_flash_init_partition_ptr(nvs);
     if (err != ESP_OK) {

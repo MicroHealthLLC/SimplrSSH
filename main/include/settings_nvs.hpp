@@ -3,7 +3,7 @@
  * The NVS partition that holds every saved setting (profiles, networks, known hosts,
  * history, vault). Flashed directly (merged image at 0x0) it is "nvs" after the app.
  * Installed by a launcher (e.g. bmorcelli/Launcher) the device's "nvs" belongs to the
- * launcher, so PocketSSH uses its own "pocketssh" data partition, which the launcher
+ * launcher, so SimplrSSH uses its own "simplrssh" data partition, which the launcher
  * creates from partitions_launcher.csv and keeps across updates.
  * All settings code opens namespaces through settings_nvs::open().
  */
@@ -19,7 +19,7 @@ namespace settings_nvs
     enum class InitResult {
         OK,            // Settings partition ready
         REFORMATTED,   // Was unreadable and has been reset (own partition only)
-        SHARED,        // Running from a launcher without the "pocketssh" partition: using the
+        SHARED,        // Running from a launcher without the "simplrssh" partition: using the
                        // launcher's small "nvs", which is never reformatted
         UNAVAILABLE,   // No usable settings partition: nothing can be saved
     };

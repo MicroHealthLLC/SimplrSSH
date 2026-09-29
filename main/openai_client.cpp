@@ -181,7 +181,7 @@ esp_err_t openai::chat(const std::string& key, const std::string& model, const s
 esp_err_t openai::transcribe(const std::string& key, const std::string& model, const int16_t* pcm, size_t samples,
                              uint32_t rate, std::string& text, std::string& error)
 {
-    static const char* B = "----pocketsshAudioBoundary";
+    static const char* B = "----simplrsshAudioBoundary";
     std::string head = std::string("--") + B + "\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n" + model + "\r\n" +
                        "--" + B + "\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n" +
                        "--" + B + "\r\nContent-Disposition: form-data; name=\"file\"; filename=\"voice.wav\"\r\n" +
