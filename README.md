@@ -39,8 +39,8 @@ If the T-Deck isn't detected, hold the trackball down while pressing reset, then
 
 ## Configure
 
-The device starts at the home menu. Type a number and press Enter, or roll the trackball and
-press it. `0` goes back, and `menu` returns home from anywhere.
+The device starts at the home menu. Type a number and press Enter, or roll the trackball
+left/right to pick and press it. `0` goes back, and `menu` returns home from anywhere.
 
 ```
 == SimplrSSH ==
@@ -81,11 +81,16 @@ OpenAI, and only while you use ChatGPT.
 
 - **Connect**: go to **2) SSH servers** → **Connect** and pick a server. Once you are
   connected, everything you type goes to the server.
-- **Scroll**: drag up or down on the screen.
+- **Scroll**: roll the trackball up or down, or drag on the screen. Works everywhere: SSH,
+  menus and ChatGPT. While you are scrolled back, new output doesn't move the screen; roll
+  back to the bottom or start typing to follow it again.
 - **Special keys**: swipe left to open a panel with Ctrl+C, Ctrl+D, Ctrl+Z, Tab and Esc.
-- **History**: roll the trackball up or down.
+- **History**: roll the trackball left (older) or right (newer).
 - **Disconnect**: type `exit` to return to the menu.
-- **ChatGPT**: type to chat, or hold the trackball to speak and let go to send.
+- **ChatGPT**: type to chat, or hold the trackball to speak and let go to send. Start talking
+  once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
+  sent as your message to the chat model you picked. If the microphone picks up nothing, the
+  device says so and doesn't upload the recording.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
 - **Help**: type `help` to list all commands.
 

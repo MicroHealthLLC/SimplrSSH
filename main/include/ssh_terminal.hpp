@@ -38,6 +38,9 @@ public:
     void handle_key_input(char key);
     void send_command(const char* cmd);
     void navigate_history(int direction);
+    // Trackball up/down: scrolls the text on screen (terminal, menus or chat).
+    // direction > 0 scrolls back toward older text, < 0 toward the newest.
+    void scroll_screen(int direction);
     void delete_current_history_entry();
     void move_cursor_left();
     void move_cursor_right();
@@ -208,6 +211,15 @@ private:
     int pty_rows = 24;
     bool wifi_quiet_connect = false;   // Background reconnect: no progress dots
     
+    // Scrolling: a view follows new text only while it shows the newest line, so text
+    // the user scrolled back to (trackball or touch drag) stays put while output arrives
+    bool terminal_follow = true;
+    bool chat_follow = true;
+    lv_obj_t* visible_view() const;
+    void scroll_to_newest();
+    static void scroll_end_cb(lv_event_t* e);
+    static bool touch_scrolling(lv_obj_t* view);
+
     void update_input_display();
     void process_received_data(const char* data, size_t len);
     void flush_display_buffer();

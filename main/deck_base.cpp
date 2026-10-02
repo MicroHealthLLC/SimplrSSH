@@ -45,7 +45,8 @@ static SSHTerminal *ssh_terminal = NULL;
 
 // Trackball events, handled by keypad_task so only one task runs the terminal
 // (menus, WiFi scans, crypto and SSH connects need a large stack)
-enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_ENTER, INPUT_HOLD_START, INPUT_HOLD_END, INPUT_HOLD_END_LONG };
+enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_LEFT, INPUT_RIGHT, INPUT_ENTER,
+                            INPUT_HOLD_START, INPUT_HOLD_END, INPUT_HOLD_END_LONG };
 static QueueHandle_t input_events = NULL;
 
 void keypad_task(void *param)
@@ -81,8 +82,10 @@ void keypad_task(void *param)
                 continue;
             }
             switch (event) {
-                case INPUT_UP:     ssh_terminal->navigate_history(1); break;   // Older command / previous choice
-                case INPUT_DOWN:   ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
+                case INPUT_UP:     ssh_terminal->scroll_screen(1); break;      // Scroll back (older text)
+                case INPUT_DOWN:   ssh_terminal->scroll_screen(-1); break;     // Scroll toward the newest text
+                case INPUT_LEFT:   ssh_terminal->navigate_history(1); break;   // Older command / previous choice
+                case INPUT_RIGHT:  ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
                 case INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
                 case INPUT_HOLD_START:    ssh_terminal->on_trackball_hold(true, false); break;   // Push-to-talk in chat
                 case INPUT_HOLD_END:      ssh_terminal->on_trackball_hold(false, false); break;
@@ -102,11 +105,14 @@ void keypad_task(void *param)
 }
 
 // Polls the trackball and queues events; the work happens in keypad_task.
+// Up/down: scroll. Left/right: history / menu choices.
 // Press: Enter. Hold (> 0.4 s): HOLD_START, then HOLD_END(_LONG) on release.
 void trackball_task(void *param)
 {
     bool last_up = true;
     bool last_down = true;
+    bool last_left = true;
+    bool last_right = true;
     bool last_press = true;
     bool holding = false;
     TickType_t press_start = 0;
@@ -116,6 +122,8 @@ void trackball_task(void *param)
     while (1) {
         bool up = gpio_get_level(BOARD_TBOX_G01);
         bool down = gpio_get_level(BOARD_TBOX_G03);
+        bool left = gpio_get_level(BOARD_TBOX_G04);
+        bool right = gpio_get_level(BOARD_TBOX_G02);
         bool press = gpio_get_level(BOARD_BOOT_PIN);
         TickType_t now = xTaskGetTickCount();
         uint8_t event;
@@ -126,6 +134,14 @@ void trackball_task(void *param)
         }
         if (!down && last_down) {
             event = INPUT_DOWN;
+            xQueueSend(input_events, &event, 0);
+        }
+        if (!left && last_left) {
+            event = INPUT_LEFT;
+            xQueueSend(input_events, &event, 0);
+        }
+        if (!right && last_right) {
+            event = INPUT_RIGHT;
             xQueueSend(input_events, &event, 0);
         }
         if (!press && last_press) {
@@ -142,6 +158,8 @@ void trackball_task(void *param)
 
         last_up = up;
         last_down = down;
+        last_left = left;
+        last_right = right;
         last_press = press;
         vTaskDelay(pdMS_TO_TICKS(30));
     }
@@ -218,14 +236,12 @@ void device_init(void)
     gpio_set_direction(BOARD_SPI_MISO, GPIO_MODE_INPUT);
     gpio_set_pull_mode(BOARD_SPI_MISO, GPIO_PULLUP_ONLY);
 
-    // Initialize trackball GPIOs for command history navigation
-    gpio_reset_pin(BOARD_TBOX_G01);
-    gpio_set_direction(BOARD_TBOX_G01, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BOARD_TBOX_G01, GPIO_PULLUP_ONLY);
-    
-    gpio_reset_pin(BOARD_TBOX_G03);
-    gpio_set_direction(BOARD_TBOX_G03, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BOARD_TBOX_G03, GPIO_PULLUP_ONLY);
+    // Trackball directions: up/down scroll, left/right command history and menu choices
+    for (gpio_num_t pin : {BOARD_TBOX_G01, BOARD_TBOX_G02, BOARD_TBOX_G03, BOARD_TBOX_G04}) {
+        gpio_reset_pin(pin);
+        gpio_set_direction(pin, GPIO_MODE_INPUT);
+        gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
+    }
     
     // Initialize trackball press button (BOOT button on GPIO 0)
     gpio_reset_pin(BOARD_BOOT_PIN);
@@ -317,7 +333,7 @@ extern "C" void app_main(void)
 
     bsp_display_unlock();
 
-    input_events = xQueueCreate(8, sizeof(uint8_t));
+    input_events = xQueueCreate(16, sizeof(uint8_t));  // A fast roll queues several steps
 
     // keypad_task runs the terminal: menus, WiFi scans, encryption and SSH connects
     xTaskCreate(keypad_task, "keypad_task", 8192, NULL, 5, NULL);

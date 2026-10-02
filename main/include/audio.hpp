@@ -19,6 +19,9 @@ namespace audio
     esp_err_t mic_start();
     size_t mic_read(int16_t* mono, size_t max_samples);  // Blocks for up to ~max_samples
     void mic_stop();
+    // Removes the DC offset and raises quiet speech toward full scale (at most 16x).
+    // Returns the recording's peak level before amplification (0..32767).
+    int normalize(int16_t* mono, size_t samples);
 
     esp_err_t speaker_start();
     esp_err_t speaker_write(const void* pcm, size_t bytes);

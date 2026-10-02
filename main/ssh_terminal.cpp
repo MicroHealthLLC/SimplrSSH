@@ -396,9 +396,10 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_set_style_pad_hor(terminal_output, 2, 0);
     lv_textarea_set_cursor_click_pos(terminal_output, false);
     lv_textarea_set_one_line(terminal_output, false);
-    // Drag to scroll back; a thin bar shows only while scrolling
+    // Drag or roll the trackball to scroll back; a thin bar shows only while scrolling
     lv_obj_set_scrollbar_mode(terminal_output, LV_SCROLLBAR_MODE_ACTIVE);
     lv_obj_set_style_width(terminal_output, 2, LV_PART_SCROLLBAR);
+    lv_obj_add_event_cb(terminal_output, scroll_end_cb, LV_EVENT_SCROLL_END, this);
 
     // Tell SSH servers the real screen size so output wraps to fit
     const lv_font_t* font = &lv_font_montserrat_10;
@@ -453,7 +454,25 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     return terminal_screen;
 }
 
-// Scrollback: when full, the oldest lines are dropped (never the new text)
+// True while a finger is dragging this view (it must not jump under the finger)
+bool SSHTerminal::touch_scrolling(lv_obj_t* view)
+{
+    for (lv_indev_t* indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_scroll_obj(indev) == view) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool at_newest(lv_obj_t* view)
+{
+    return lv_obj_get_scroll_bottom(view) <= 4;
+}
+
+// Scrollback: when full, the oldest lines are dropped (never the new text).
+// Follows the new text only if the newest line was showing; otherwise the
+// lines being read stay where they are.
 void SSHTerminal::append_text(const char* text)
 {
     static const size_t SCROLLBACK_MAX = 6144;
@@ -461,6 +480,8 @@ void SSHTerminal::append_text(const char* text)
     if (!terminal_output || !text || !*text) {
         return;
     }
+    bool follow = terminal_follow && !touch_scrolling(terminal_output);
+    int32_t view_y = lv_obj_get_scroll_y(terminal_output);
     const char* current = lv_textarea_get_text(terminal_output);
     size_t current_len = strlen(current);
     size_t add_len = strlen(text);
@@ -470,23 +491,77 @@ void SSHTerminal::append_text(const char* text)
     }
     if (current_len + add_len <= SCROLLBACK_MAX) {
         lv_textarea_add_text(terminal_output, text);
-        return;
+    } else {
+        size_t keep = SCROLLBACK_KEEP - add_len;
+        const char* tail = current + (current_len > keep ? current_len - keep : 0);
+        const char* line_start = strchr(tail, '\n');
+        if (line_start && keep > 0) {
+            tail = line_start + 1;
+        }
+        if (!follow) {
+            // Height of the dropped lines: where the first kept letter (UTF-8) sits now
+            uint32_t letter = 0;
+            for (const char* c = current; c < tail; c++) {
+                letter += ((uint8_t)*c & 0xC0) != 0x80;
+            }
+            lv_point_t pos;
+            lv_label_get_letter_pos(lv_textarea_get_label(terminal_output), letter, &pos);
+            view_y = view_y > pos.y ? view_y - pos.y : 0;
+        }
+        std::string kept(tail);
+        kept += text;
+        lv_textarea_set_text(terminal_output, kept.c_str());
     }
-    size_t keep = SCROLLBACK_KEEP - add_len;
-    const char* tail = current + (current_len > keep ? current_len - keep : 0);
-    const char* line_start = strchr(tail, '\n');
-    if (line_start && keep > 0) {
-        tail = line_start + 1;
-    }
-    std::string kept(tail);
-    kept += text;
-    lv_textarea_set_text(terminal_output, kept.c_str());
+    // Replaces the text area's own (animated) scroll to its cursor
+    lv_obj_scroll_to_y(terminal_output, follow ? LV_COORD_MAX : view_y, LV_ANIM_OFF);
 }
 
 void SSHTerminal::clear_terminal()
 {
     if (terminal_output) {
         lv_textarea_set_text(terminal_output, "");
+        terminal_follow = true;
+    }
+}
+
+// The scrollable text on screen: the chat while it is open, else the terminal
+lv_obj_t* SSHTerminal::visible_view() const
+{
+    return chat_view ? chat_view : terminal_output;
+}
+
+void SSHTerminal::scroll_screen(int direction)
+{
+    lv_obj_t* view = visible_view();
+    if (!view || direction == 0) {
+        return;
+    }
+    last_input_ms = esp_timer_get_time() / 1000;
+    const int32_t step = 3 * lv_font_get_line_height(lv_obj_get_style_text_font(view, LV_PART_MAIN));
+    lv_obj_scroll_by_bounded(view, 0, direction > 0 ? step : -step, LV_ANIM_OFF);
+    bool follow = at_newest(view);
+    (view == chat_view ? chat_follow : terminal_follow) = follow;
+}
+
+// Typing brings the newest text back into view
+void SSHTerminal::scroll_to_newest()
+{
+    lv_obj_t* view = visible_view();
+    if (view) {
+        lv_obj_scroll_to_y(view, LV_COORD_MAX, LV_ANIM_OFF);
+        (view == chat_view ? chat_follow : terminal_follow) = true;
+    }
+}
+
+// A drag (or programmatic scroll) ended: follow new text again only at the bottom
+void SSHTerminal::scroll_end_cb(lv_event_t* e)
+{
+    SSHTerminal* terminal = (SSHTerminal*)lv_event_get_user_data(e);
+    lv_obj_t* view = (lv_obj_t*)lv_event_get_target(e);
+    if (view == terminal->terminal_output) {
+        terminal->terminal_follow = at_newest(view);
+    } else if (view == terminal->chat_view) {
+        terminal->chat_follow = at_newest(view);
     }
 }
 
@@ -727,6 +802,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
         append_text("  exit - Disconnect SSH\n");
         append_text("  clear - Clear terminal\n");
         append_text("  help - Show this help\n");
+        append_text("Trackball up/down or drag: scroll. Left/right: history.\n");
     }
     else if (ssh_connected) {
         send_command(cmd.c_str());
@@ -738,6 +814,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
 void SSHTerminal::handle_key_input(char key)
 {
     last_input_ms = esp_timer_get_time() / 1000;
+    scroll_to_newest();
 
     if (wizard_active() && (key == '\n' || key == '\r')) {
         // Wizard answers are never added to command history (they may be passwords)
@@ -922,7 +999,7 @@ void SSHTerminal::history_save_cb(lv_timer_t* timer)
 void SSHTerminal::navigate_history(int direction)
 {
     if (wizard_active()) {
-        // In the profile wizard the trackball cycles menu choices instead of history
+        // In a menu, trackball left/right cycles the choices instead of history
         wizard_cycle_choice(direction);
         return;
     }

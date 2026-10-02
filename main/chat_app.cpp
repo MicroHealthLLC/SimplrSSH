@@ -30,6 +30,8 @@ static const size_t MAX_HISTORY = 12;          // Messages kept for context
 static const size_t MAX_CONTEXT_CHARS = 6000;  // Context sent per request
 static const uint32_t MAX_BUBBLES = 30;        // Labels kept on screen
 static const size_t MAX_RECORD_SAMPLES = audio::MIC_RATE * 30;  // 30 s, ~960 KB in PSRAM
+static const size_t SKIP_SAMPLES = audio::MIC_RATE / 10;        // First 100 ms: codec start-up click
+static const int MIN_VOICE_PEAK = 100;                           // Below this the mic heard nothing
 static const uint32_t WORKER_STACK = 10240;
 
 enum Bubble { BUBBLE_USER, BUBBLE_AI, BUBBLE_INFO };
@@ -283,8 +285,11 @@ void SSHTerminal::chat_models_done(bool ok, const openai::Models& models, const 
 // Chat view
 // ---------------------------------------------------------------------------
 
+// Follows new text only while the newest line shows (see append_text)
 lv_obj_t* SSHTerminal::chat_add_bubble(int kind, const std::string& text)
 {
+    bool follow = chat_follow && !touch_scrolling(chat_view);
+    int32_t view_y = lv_obj_get_scroll_y(chat_view);
     lv_obj_t* label = lv_label_create(chat_view);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, lv_pct(100));
@@ -293,10 +298,12 @@ lv_obj_t* SSHTerminal::chat_add_bubble(int kind, const std::string& text)
     lv_obj_set_style_text_color(label, lv_color_hex(kind == BUBBLE_USER ? 0xFFFF00 : kind == BUBBLE_AI ? 0x00FF00 : 0x8080A0), 0);
     lv_label_set_text(label, text.c_str());
     while (lv_obj_get_child_count(chat_view) > MAX_BUBBLES) {
-        lv_obj_delete(lv_obj_get_child(chat_view, 0));
+        lv_obj_t* oldest = lv_obj_get_child(chat_view, 0);
+        view_y -= lv_obj_get_height(oldest) + lv_obj_get_style_pad_row(chat_view, LV_PART_MAIN);
+        lv_obj_delete(oldest);
     }
     lv_obj_update_layout(chat_view);
-    lv_obj_scroll_to_y(chat_view, LV_COORD_MAX, LV_ANIM_OFF);
+    lv_obj_scroll_to_y(chat_view, follow ? LV_COORD_MAX : LV_MAX(view_y, 0), LV_ANIM_OFF);
     return label;
 }
 
@@ -318,8 +325,10 @@ void SSHTerminal::chat_ui_update(uint32_t generation, lv_obj_t* label, const std
     if (label && bsp_display_lock(200)) {
         if (chat_view && generation == chat_generation) {
             lv_label_set_text(label, text.c_str());
-            lv_obj_update_layout(chat_view);
-            lv_obj_scroll_to_y(chat_view, LV_COORD_MAX, LV_ANIM_OFF);
+            if (chat_follow && !touch_scrolling(chat_view)) {
+                lv_obj_update_layout(chat_view);
+                lv_obj_scroll_to_y(chat_view, LV_COORD_MAX, LV_ANIM_OFF);
+            }
         }
         bsp_display_unlock();
     }
@@ -367,7 +376,12 @@ void SSHTerminal::open_chat()
         lv_obj_set_style_pad_all(chat_view, 4, 0);
         lv_obj_set_style_pad_row(chat_view, 6, 0);
         lv_obj_set_flex_flow(chat_view, LV_FLEX_FLOW_COLUMN);
-        lv_obj_set_scrollbar_mode(chat_view, LV_SCROLLBAR_MODE_OFF);
+        // Drag or roll the trackball to scroll back; a thin bar shows only while scrolling
+        lv_obj_set_scroll_dir(chat_view, LV_DIR_VER);
+        lv_obj_set_scrollbar_mode(chat_view, LV_SCROLLBAR_MODE_ACTIVE);
+        lv_obj_set_style_width(chat_view, 2, LV_PART_SCROLLBAR);
+        lv_obj_add_event_cb(chat_view, scroll_end_cb, LV_EVENT_SCROLL_END, this);
+        chat_follow = true;
         lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(side_panel);
 
@@ -402,6 +416,7 @@ void SSHTerminal::chat_clear()
     chat_history.clear();
     if (chat_view) {
         lv_obj_clean(chat_view);
+        chat_follow = true;
         chat_add_bubble(BUBBLE_INFO, "New chat.");
     }
 }
@@ -514,15 +529,24 @@ void SSHTerminal::chat_job()
         chat_recording = false;
         audio::mic_stop();
 
+        size_t skip = std::min(n, SKIP_SAMPLES);
+        int16_t* voice = pcm + skip;
+        n -= skip;
         std::string heard;
+        int level = 0;
         if (n < audio::MIC_RATE / 2) {
             chat_ui_bubble(gen, BUBBLE_INFO, "Too short - hold the trackball while you speak.");
+        } else if ((level = audio::normalize(voice, n)) < MIN_VOICE_PEAK) {
+            // Nothing worth uploading: say so instead of sending silence to OpenAI
+            chat_ui_bubble(gen, BUBBLE_INFO, "The microphone heard nothing (level " + std::to_string(level) +
+                                             ") - speak once 'Recording' shows.");
         } else {
             chat_ui_banner("Transcribing...");
-            if (openai::transcribe(key, stt_model, pcm, n, audio::MIC_RATE, heard, error) != ESP_OK) {
+            if (openai::transcribe(key, stt_model, voice, n, audio::MIC_RATE, heard, error) != ESP_OK) {
                 chat_ui_bubble(gen, BUBBLE_INFO, error);
             } else if (heard.empty()) {
-                chat_ui_bubble(gen, BUBBLE_INFO, "Didn't catch that - try again.");
+                chat_ui_bubble(gen, BUBBLE_INFO, "Didn't catch that (mic level " + std::to_string(level) +
+                                                 ") - try again.");
             }
         }
         heap_caps_free(pcm);

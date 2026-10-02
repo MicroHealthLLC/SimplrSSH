@@ -2,8 +2,8 @@
  * Connection Profile Menu
  * Menu-driven, line-based wizard for listing, adding, editing, deleting and
  * connecting with saved SSH profiles. Prompts are printed into the terminal and
- * answered on the normal input line; numbered menus can also be cycled with the
- * trackball and confirmed with a trackball press.
+ * answered on the normal input line; numbered menus can also be cycled by rolling the
+ * trackball left/right and confirmed with a trackball press (up/down scrolls).
  *
  * This file also holds the wizard plumbing shared with the WiFi menu
  * (wifi_menu.cpp) and the master PIN prompts (vault_menu.cpp).
@@ -137,7 +137,7 @@ void SSHTerminal::wizard_cycle_choice(int direction)
     if (it == wizard.choices.end()) {
         pos = direction > 0 ? count - 1 : 0;
     } else {
-        // Trackball up (direction > 0) moves to the previous choice, down to the next
+        // Trackball left (direction > 0) moves to the previous choice, right to the next
         pos = (int)(it - wizard.choices.begin()) + (direction > 0 ? -1 : 1);
         pos = (pos + count) % count;
     }
