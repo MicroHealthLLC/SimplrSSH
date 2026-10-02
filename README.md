@@ -87,7 +87,10 @@ OpenAI, and only while you use ChatGPT.
 - **Special keys**: swipe left to open a panel with Ctrl+C, Ctrl+D, Ctrl+Z, Tab and Esc.
 - **History**: roll the trackball left (older) or right (newer).
 - **Disconnect**: type `exit` to return to the menu.
-- **ChatGPT**: type to chat, or hold the trackball to speak and let go to send.
+- **ChatGPT**: type to chat, or hold the trackball to speak and let go to send. Start talking
+  once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
+  sent as your message to the chat model you picked. If the microphone picks up nothing, the
+  device says so and doesn't upload the recording.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
 - **Help**: type `help` to list all commands.
 

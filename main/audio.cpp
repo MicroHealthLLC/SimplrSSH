@@ -1,7 +1,9 @@
 /*
  * Audio Implementation
- * Mic: ES7210 (I2C 0x40) configured through esp_codec_dev, 16 kHz, two mics,
- * mixed down to mono. Speaker: plain I2S to the MAX98357A amplifier.
+ * Mic: ES7210 (I2C 0x40) configured through esp_codec_dev, 16 kHz, 16-bit stereo I2S,
+ * mixed down to mono. All four ES7210 inputs are powered as in LilyGO's T-Deck example
+ * (its microphones sit on MIC3/MIC4, which esp_codec_dev only enables in TDM mode).
+ * Speaker: plain I2S to the MAX98357A amplifier.
  */
 
 #include "audio.hpp"
@@ -11,6 +13,7 @@
 #include "driver/i2s_std.h"
 #include "esp_codec_dev.h"
 #include "esp_codec_dev_defaults.h"
+#include <algorithm>
 
 static const char *TAG = "AUDIO";
 
@@ -20,6 +23,38 @@ static const audio_codec_data_if_t* s_data_if = NULL;
 static const audio_codec_ctrl_if_t* s_ctrl_if = NULL;
 static const audio_codec_if_t* s_codec_if = NULL;
 static esp_codec_dev_handle_t s_mic = NULL;
+
+// ES7210 registers (esp_codec_dev keeps its register map private)
+static const int ES7210_RESET = 0x00;
+static const int ES7210_CLOCK_OFF = 0x01;
+static const int ES7210_MIC3_GAIN = 0x45;
+static const int ES7210_MIC4_GAIN = 0x46;
+static const int ES7210_MIC34_POWER = 0x4C;
+static const uint8_t ES7210_GAIN_30DB = 10;  // 3 dB steps from 0 dB
+static const float MIC_GAIN_DB = 30.0f;
+
+static int es7210_write(uint8_t reg, uint8_t value)
+{
+    return s_ctrl_if->write_reg(s_ctrl_if, reg, 1, &value, 1);
+}
+
+// esp_codec_dev powers only MIC1/MIC2 for a two-channel stream. Also power MIC3/MIC4
+// (normal I2S keeps them on the second data line), so the T-Deck's microphones are
+// heard whichever pair its data pin carries.
+static esp_err_t es7210_power_mic34()
+{
+    uint8_t clock_off = 0;
+    if (s_ctrl_if->read_reg(s_ctrl_if, ES7210_CLOCK_OFF, 1, &clock_off, 1) != ESP_CODEC_DEV_OK) {
+        return ESP_FAIL;
+    }
+    int ret = es7210_write(ES7210_CLOCK_OFF, clock_off & ~0x15);  // ADC34 clocks on
+    ret |= es7210_write(ES7210_MIC34_POWER, 0x00);
+    ret |= es7210_write(ES7210_MIC3_GAIN, 0x10 | ES7210_GAIN_30DB);
+    ret |= es7210_write(ES7210_MIC4_GAIN, 0x10 | ES7210_GAIN_30DB);
+    ret |= es7210_write(ES7210_RESET, 0x71);  // Restart the ADC state machine, as on start
+    ret |= es7210_write(ES7210_RESET, 0x41);
+    return ret == ESP_CODEC_DEV_OK ? ESP_OK : ESP_FAIL;
+}
 
 esp_err_t audio::mic_start()
 {
@@ -70,7 +105,8 @@ esp_err_t audio::mic_start()
         if (!s_mic || esp_codec_dev_open(s_mic, &fs) != ESP_CODEC_DEV_OK) {
             err = ESP_FAIL;
         } else {
-            esp_codec_dev_set_in_gain(s_mic, 30.0f);
+            esp_codec_dev_set_in_gain(s_mic, MIC_GAIN_DB);
+            err = es7210_power_mic34();
         }
     }
     if (err != ESP_OK) {
@@ -124,6 +160,31 @@ void audio::mic_stop()
         i2s_del_channel(s_rx);  // The codec layer already disabled it
         s_rx = NULL;
     }
+}
+
+int audio::normalize(int16_t* mono, size_t samples)
+{
+    if (samples == 0) {
+        return 0;
+    }
+    int64_t sum = 0;
+    for (size_t i = 0; i < samples; i++) {
+        sum += mono[i];
+    }
+    int32_t dc = (int32_t)(sum / (int64_t)samples);
+    int32_t peak = 0;
+    for (size_t i = 0; i < samples; i++) {
+        int32_t v = mono[i] - dc;
+        peak = std::max(peak, v < 0 ? -v : v);
+    }
+    // Target about half of full scale; Whisper copes poorly with very quiet input
+    int32_t gain_x16 = peak > 0 ? std::min<int32_t>(16 * 16, 16 * 16000 / peak) : 16;
+    gain_x16 = std::max<int32_t>(gain_x16, 16);
+    for (size_t i = 0; i < samples; i++) {
+        int32_t v = (mono[i] - dc) * gain_x16 / 16;
+        mono[i] = (int16_t)std::min<int32_t>(32767, std::max<int32_t>(-32768, v));
+    }
+    return (int)std::min<int32_t>(peak, 32767);
 }
 
 esp_err_t audio::speaker_start()

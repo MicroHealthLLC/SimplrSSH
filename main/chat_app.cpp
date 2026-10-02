@@ -30,6 +30,8 @@ static const size_t MAX_HISTORY = 12;          // Messages kept for context
 static const size_t MAX_CONTEXT_CHARS = 6000;  // Context sent per request
 static const uint32_t MAX_BUBBLES = 30;        // Labels kept on screen
 static const size_t MAX_RECORD_SAMPLES = audio::MIC_RATE * 30;  // 30 s, ~960 KB in PSRAM
+static const size_t SKIP_SAMPLES = audio::MIC_RATE / 10;        // First 100 ms: codec start-up click
+static const int MIN_VOICE_PEAK = 100;                           // Below this the mic heard nothing
 static const uint32_t WORKER_STACK = 10240;
 
 enum Bubble { BUBBLE_USER, BUBBLE_AI, BUBBLE_INFO };
@@ -527,15 +529,24 @@ void SSHTerminal::chat_job()
         chat_recording = false;
         audio::mic_stop();
 
+        size_t skip = std::min(n, SKIP_SAMPLES);
+        int16_t* voice = pcm + skip;
+        n -= skip;
         std::string heard;
+        int level = 0;
         if (n < audio::MIC_RATE / 2) {
             chat_ui_bubble(gen, BUBBLE_INFO, "Too short - hold the trackball while you speak.");
+        } else if ((level = audio::normalize(voice, n)) < MIN_VOICE_PEAK) {
+            // Nothing worth uploading: say so instead of sending silence to OpenAI
+            chat_ui_bubble(gen, BUBBLE_INFO, "The microphone heard nothing (level " + std::to_string(level) +
+                                             ") - speak once 'Recording' shows.");
         } else {
             chat_ui_banner("Transcribing...");
-            if (openai::transcribe(key, stt_model, pcm, n, audio::MIC_RATE, heard, error) != ESP_OK) {
+            if (openai::transcribe(key, stt_model, voice, n, audio::MIC_RATE, heard, error) != ESP_OK) {
                 chat_ui_bubble(gen, BUBBLE_INFO, error);
             } else if (heard.empty()) {
-                chat_ui_bubble(gen, BUBBLE_INFO, "Didn't catch that - try again.");
+                chat_ui_bubble(gen, BUBBLE_INFO, "Didn't catch that (mic level " + std::to_string(level) +
+                                                 ") - try again.");
             }
         }
         heap_caps_free(pcm);
