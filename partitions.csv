@@ -1,7 +1,7 @@
 # Name,   Type, SubType, Offset,   Size,    Flags
 # Settings (nvs: WiFi networks, profiles, encrypted passwords...) sit AFTER the app, so flashing the merged
 # release image at 0x0 (bootloader + partition table + app) never erases them.
-# Don't move nvs back in front of the app. See CLAUDE.md.
+# Don't move nvs back in front of the app. See AI_RULES.md.
 # (0x910000-0xD10000 was the old SPIFFS vault; passwords now live in nvs.)
 factory,  app,  factory, 0x10000,  9M,
 nvs,      data, nvs,     0xD10000, 0x40000,

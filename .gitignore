@@ -3,3 +3,7 @@
 # ESP-IDF build output and downloaded components (restored from dependencies.lock)
 build/
 managed_components/
+
+# Host unit tests (test/host)
+build-host/
+__pycache__/

@@ -6,6 +6,7 @@
 
 #include "ssh_terminal.hpp"
 #include "secret_vault.hpp"
+#include "command_redact.hpp"
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
@@ -183,7 +184,7 @@ esp_err_t SSHTerminal::start_wifi_driver()
 
 esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
 {
-    ESP_LOGI(TAG, "Connecting WiFi to %s...", ssid);
+    ESP_LOGI(TAG, "Connecting WiFi...");
     start_wifi_driver();
     
     // Leave the current network first (switching networks)
@@ -221,7 +222,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
                 pdMS_TO_TICKS(check_interval_ms));
 
         if (bits & WIFI_CONNECTED_BIT) {
-            ESP_LOGI(TAG, "Connected to AP SSID:%s", ssid);
+            ESP_LOGI(TAG, "WiFi connected");
             wifi_connected = true;
             wifi_ssid = ssid;
             wifi_auto_enabled = true;
@@ -232,7 +233,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
             }
             return ESP_OK;
         } else if (bits & WIFI_FAIL_BIT) {
-            ESP_LOGI(TAG, "Failed to connect to SSID:%s", ssid);
+            ESP_LOGI(TAG, "WiFi connection failed");
             break;
         }
         
@@ -244,7 +245,7 @@ esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
         elapsed_ms += check_interval_ms;
     }
     
-    ESP_LOGE(TAG, "WiFi connection to %s failed", ssid);
+    ESP_LOGE(TAG, "WiFi connection failed");
     s_connect_requested = false;
     esp_wifi_disconnect();
     wifi_connected = false;
@@ -563,47 +564,6 @@ void SSHTerminal::scroll_end_cb(lv_event_t* e)
     } else if (view == terminal->chat_view) {
         terminal->chat_follow = at_newest(view);
     }
-}
-
-// Masks the password/passphrase argument of local commands that take one
-// (connect SSID PASS, ssh HOST PORT USER PASS, sshkey ... KEYFILE PASSPHRASE),
-// so it is never echoed on screen or written to command history.
-static std::string redact_secrets(const std::string& cmd, bool* has_secret)
-{
-    *has_secret = false;
-    size_t secret_arg;
-    if (cmd.rfind("connect ", 0) == 0) {
-        secret_arg = 1;
-    } else if (cmd.rfind("ssh ", 0) == 0) {
-        secret_arg = 3;
-    } else if (cmd.rfind("sshkey ", 0) == 0) {
-        secret_arg = 4;
-    } else {
-        return cmd;
-    }
-
-    // Find where each argument starts, honouring "quoted strings"
-    size_t arg = 0;
-    bool in_token = false;
-    bool in_quotes = false;
-    for (size_t i = cmd.find(' '); i < cmd.length(); i++) {
-        char c = cmd[i];
-        if (c == ' ' && !in_quotes) {
-            in_token = false;
-            continue;
-        }
-        if (!in_token) {
-            if (arg++ == secret_arg) {
-                *has_secret = true;
-                return cmd.substr(0, i) + "****";
-            }
-            in_token = true;
-        }
-        if (c == '"') {
-            in_quotes = !in_quotes;
-        }
-    }
-    return cmd;
 }
 
 // Runs a command typed on the input line (or at the home menu)
@@ -1113,12 +1073,12 @@ void SSHTerminal::load_history_from_nvs()
         return;
     }
     
-    ESP_LOGI(TAG, "Loading %lu commands from NVS...", history_count);
+    ESP_LOGI(TAG, "Loading %lu commands from NVS...", (unsigned long)history_count);
     
     command_history.clear();
     for (uint32_t i = 0; i < history_count && i < 100; i++) {
         char key[16];
-        snprintf(key, sizeof(key), "hist_%lu", i);
+        snprintf(key, sizeof(key), "hist_%lu", (unsigned long)i);
         
         size_t required_size = 0;
         err = nvs_get_str(nvs_handle, key, NULL, &required_size);

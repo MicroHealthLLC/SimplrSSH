@@ -69,7 +69,8 @@ jobs:
           # Lines look like: main/file.cpp:123:  [2] (buffer) char:Statically-sized arrays ...
           grep -E '^main/' flawfinder.txt | while IFS= read -r l; do
             file=${l%%:*}; rest=${l#*:}; line=${rest%%:*}; msg=${rest#*:}
-            echo "::warning file=$file,line=$line,title=flawfinder::$(echo "$msg" | sed 's/^ *//')"
+            msg=${msg#"${msg%%[! ]*}"}   # Drop leading spaces
+            echo "::warning file=$file,line=$line,title=flawfinder::$msg"
           done
           {
             echo "## flawfinder (risk level 2+)"

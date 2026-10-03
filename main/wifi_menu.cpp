@@ -322,7 +322,7 @@ bool SSHTerminal::wifi_auto_connect(bool quiet)
                 append_text(("WiFi connected: " + c.ssid + "\n").c_str());
                 return true;
             }
-            ESP_LOGW(TAG, "Auto-connect to %s failed", c.ssid.c_str());
+            ESP_LOGW(TAG, "Auto-connect to a saved network failed");
         }
         if (!quiet) {
             append_text("Couldn't join a saved network yet - will keep trying in the background.\n");

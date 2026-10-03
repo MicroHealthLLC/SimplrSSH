@@ -85,6 +85,34 @@ reader can recover saved passwords**, since the key is on the same chip. SD card
 remain unreadable elsewhere (the device key is never exported). Set a PIN, or enable flash
 encryption, for devices that may be lost.
 
+### Continuous checks (2026-10-03)
+
+Every push and pull request runs the **Tests** workflow (`.github/workflows/tests.yml`), and
+a release waits for it to pass on the same commit. Security-relevant gates:
+
+- **Secrets**: host tests check that the vault never stores or logs plaintext, that tampered or
+  moved ciphertext is rejected, that PINs use the slow key derivation, and that typed passwords
+  are redacted from echo and history; guard tests reject log statements that print user input
+  or secrets; gitleaks scans the new commits; the built images are scanned for private keys and
+  API keys (with a planted-key negative control).
+- **Untrusted SD card input**: restore tests feed damaged and hostile backups (unknown
+  namespaces, the device-key namespace, oversized or malformed records) and check that the
+  device is left unchanged.
+- **Network surface**: the linked firmware may not contain listening sockets, HTTP servers, OTA,
+  Bluetooth, mDNS or access-point code, must link CA-bundle TLS verification and SSH host key
+  checks, and its generated sdkconfig must keep SoftAP, DHCP server, IPv6 and Bluetooth off.
+- **Supply chain**: actions pinned by SHA and images by digest (enforced), components installed
+  only at the locked versions with verified hashes, and a CVE audit (esp-idf-sbom, NVD) of
+  ESP-IDF, its libraries and the components that blocks on new high/critical findings.
+
+Found while introducing these checks:
+
+| Finding | Status |
+|---|---|
+| WiFi network names (SSIDs) were written to the serial log | Fixed: removed from all log lines |
+| The ESP-IDF v5.5.1 component manager re-solves dependencies after installing the locked ones, so builds compiled LVGL 9.6.0~1 and cmake_utilities 1.1.1 instead of the locked 9.4.0 / 0.5.3 (builds were not reproducible from `dependencies.lock`) | Open: the exact drifted versions are pinned in `.github/scripts/check_dependencies.py`, so any further change fails the gate. Fix by regenerating the lock so both passes agree (changes the firmware; needs testing on a T-Deck) |
+| ESP-IDF v5.5.1 and its bundled mbedTLS 3.6.4 have published high/critical CVEs (11 at the time) | Open: listed in `.github/audit-baseline.txt` pending an ESP-IDF upgrade (needs testing on a T-Deck); not yet assessed for reachability |
+
 ### Known residual risks
 
 - Flash is not encrypted. Non-secret data (profiles, known hosts, command history, SD keys while
@@ -102,3 +130,6 @@ encryption, for devices that may be lost.
   never erases it.
 - `skuodi/libssh2_esp` tracks a libssh2 development snapshot rather than a tagged release.
   Re-verify it against upstream (see above) when updating.
+- The CVE audit only sees packages with a CPE in the SBOM (ESP-IDF, mbedTLS, lwIP, FreeRTOS,
+  newlib, cJSON, wpa_supplicant...). Registry components such as libssh2 and LVGL are listed but
+  not matched against the NVD; review their upstream advisories when updating them.

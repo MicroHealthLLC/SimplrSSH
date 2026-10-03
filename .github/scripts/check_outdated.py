@@ -94,7 +94,8 @@ def main():
         rows.insert(0, ("ESP-IDF (framework)", idf_current, idf_latest,
                         "update available" if idf_outdated else "up to date", True))
         if idf_outdated:
-            print(f"::warning file=.github/workflows/build.yml::ESP-IDF {idf_current} is outdated; latest is {idf_latest}")
+            print(f"::warning file=.github/workflows/build.yml::ESP-IDF {idf_current} is outdated; "
+                  f"latest is {idf_latest}")
 
     lines = [
         "## Dependency check",

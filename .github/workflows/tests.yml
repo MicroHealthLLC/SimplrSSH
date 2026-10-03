@@ -1,0 +1,339 @@
+##
+# .github/workflows/tests.yml
+#
+# Tests: the one quality gate. It runs on every push to every branch and on every pull
+# request, as its own "Tests" run. The release pipeline (build.yml) waits for the Tests run
+# of the commit it is about to release (.github/scripts/wait-for-tests.sh), so no firmware
+# is published from a commit that did not pass. No job is advisory: a red job blocks the
+# merge (make "Tests" a required check on main and integration) and the release.
+#
+# Modelled on TueriCXO's Tests gate (minus its PDF/UA accessibility job). The jobs run as a
+# strict ordered chain, each `needs` the one before it, so a failure stops everything after
+# it and the first red job is the one to read:
+#
+#   install → lint → typecheck → unit-tests ─┬─► build ─┬─► audit ──► secret-scan
+#                                            │          └─► network-surface
+#                                            └─► persistence
+#
+#   install          clean resolve in the pinned ESP-IDF image: the locked components
+#                    install with verified hashes, the build compiles nothing unexpected,
+#                    and every sdkconfig.defaults setting takes effect.
+#   lint             actionlint (workflows), ruff (Python), cppcheck (C++, warnings block).
+#   typecheck        host compile of the firmware's hardware-independent sources and the
+#                    tests with -Wall -Wextra -Werror; Python byte-compile.
+#   unit-tests       host C++ tests (command redaction, profile store, vault) with ASan and
+#                    UBSan, and the Python guard tests that keep AI_RULES.md's rules (supply
+#                    chain, settings access, task stacks, bounds, logging) and the CI scripts.
+#   persistence      the settings that must survive flashing and updates: partition layouts,
+#                    settings partition choice, SD backup/restore of untrusted files, records
+#                    written by older firmware (the database gate's equivalent). ESP-IDF's
+#                    gen_esp32part validates both tables in the build job (idf.py build,
+#                    idf.py launcher-bin).
+#   build            the firmware, release and launcher images; static internal RAM budget;
+#                    no compiler warnings in main/ (except listed known ones); no key
+#                    material in the images (with a
+#                    negative control); SBOM for the audit.
+#   audit            high/critical CVEs (NVD, via esp-idf-sbom) in ESP-IDF, its libraries and
+#                    the components, except reviewed ones in .github/audit-baseline.txt.
+#   network-surface  the linked firmware has no listening sockets, servers, OTA, Bluetooth or
+#                    access point, and links TLS verification and SSH host key checks.
+#   secret-scan      gitleaks over the commits this push / pull request introduces.
+#
+# Actions are pinned by commit and images by digest (test/guards/test_supply_chain.py).
+# Hardware behaviour is not tested here: it can only be confirmed on a real T-Deck.
+##
+
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Superseded runs of pull requests and of pushes to feature branches are cancelled to save
+# minutes. Pushes to main and integration are never cancelled and each commit has its own
+# group: the release pipeline waits for exactly that run.
+concurrency:
+  group: >-
+    tests-${{ github.event_name }}-${{
+    (github.event_name == 'pull_request' || (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/integration'))
+    && github.ref || github.sha }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request' ||
+    (github.ref != 'refs/heads/main' && github.ref != 'refs/heads/integration') }}
+
+permissions:
+  contents: read
+
+env:
+  # ESP-IDF v5.5.1, pinned by digest; same image as build.yml
+  IDF_IMAGE: espressif/idf:v5.5.1@sha256:dfa2d076c796769c07c155eba6c672b9f395aec943b2ba3701b73379b5f9e884
+  ESP_IDF_SBOM_VERSION: 1.4.0
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  # a) install: resolve components on a clean checkout the way the build does, and check
+  #    the result against dependencies.lock and sdkconfig.defaults
+  #    (.github/scripts/check_dependencies.py, including the known re-solve drift).
+  install:
+    name: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Pull ESP-IDF image (retries transient registry errors)
+        run: |
+          for attempt in 1 2 3 4; do
+            docker pull "$IDF_IMAGE" && exit 0
+            echo "Pull failed (attempt $attempt), retrying..."
+            sleep $((attempt * 15))
+          done
+          exit 1
+      - name: Resolve components (idf.py reconfigure)
+        run: |
+          cp dependencies.lock "$RUNNER_TEMP/dependencies.lock"
+          cp sdkconfig "$RUNNER_TEMP/sdkconfig"
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/project" -w /project "$IDF_IMAGE" \
+            bash -c 'idf.py reconfigure > reconfigure.log 2>&1' || { tail -50 reconfigure.log; exit 1; }
+      - name: Check against dependencies.lock and sdkconfig.defaults
+        run: |
+          python3 .github/scripts/check_dependencies.py reconfigure.log \
+            "$RUNNER_TEMP/dependencies.lock" "$RUNNER_TEMP/sdkconfig" sdkconfig
+
+  # b) lint: workflows (actionlint, pinned binary checked against its SHA-256), Python
+  #    (ruff, pinned by hash) and C++ (cppcheck; any warning or error fails).
+  lint:
+    name: lint
+    needs: install
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: actionlint
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint" -color
+      - name: ruff
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet --require-hashes -r test/lint/requirements.txt
+          "$RUNNER_TEMP/venv/bin/ruff" check --config test/lint/ruff.toml --output-format github .github/scripts test/guards
+      - name: Install cppcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cppcheck
+      - name: cppcheck
+        run: |
+          cppcheck --version
+          cppcheck --enable=warning,portability --std=c++17 --language=c++ --inline-suppr --quiet \
+            --error-exitcode=1 --suppress=missingIncludeSystem --suppress=missingInclude \
+            --suppress=unmatchedSuppression --include=test/lint/cppcheck_macros.h -I main/include \
+            --template='::error file={file},line={line},title=cppcheck {id}::{severity}: {message}' \
+            main/*.cpp test/host/*.cpp test/host/tests/*.cpp
+
+  # c) typecheck: the firmware's hardware-independent sources and the host tests compile
+  #    cleanly with warnings as errors (the full firmware compile is the build job).
+  typecheck:
+    name: typecheck
+    needs: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install host toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libmbedtls-dev
+      - name: Compile (-Wall -Wextra -Werror)
+        run: |
+          cmake -S test/host -B build-host -DSTRICT=ON -DSANITIZE=OFF
+          cmake --build build-host -j "$(nproc)"
+      - name: Byte-compile Python
+        run: python3 -m compileall -q .github/scripts test/guards
+
+  # d) unit-tests: host C++ tests under AddressSanitizer/UBSan, plus the Python guard tests
+  #    and the CI scripts' tests.
+  unit-tests:
+    name: unit-tests
+    needs: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install host toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libmbedtls-dev
+      - name: C++ unit tests (ASan + UBSan)
+        run: |
+          cmake -S test/host -B build-host -DSTRICT=ON -DSANITIZE=ON
+          cmake --build build-host -j "$(nproc)"
+          ctest --test-dir build-host -L unit --output-on-failure
+      - name: Guard tests and CI script tests
+        working-directory: test/guards
+        run: python3 -m unittest -v test_supply_chain test_firmware_rules test_rules_file test_ci_scripts
+
+  # e) persistence: users' settings survive flashing, launcher installs, updates and SD
+  #    restores; older records still load (AI_RULES.md, Persistence).
+  persistence:
+    name: persistence
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Partition layouts
+        working-directory: test/guards
+        run: python3 -m unittest -v test_partitions
+      - name: Install host toolchain
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq cmake g++ libmbedtls-dev
+      - name: Settings partition, backup/restore, migration (ASan + UBSan)
+        run: |
+          cmake -S test/host -B build-host -DSTRICT=ON -DSANITIZE=ON
+          cmake --build build-host -j "$(nproc)"
+          ctest --test-dir build-host -L persistence --output-on-failure
+
+  # f) build: the firmware and both images, in the pinned ESP-IDF image. Then the static
+  #    internal RAM budget, compiler warnings in main/, and a scan of the images for key
+  #    material, proven able to fail by a negative control.
+  build:
+    name: build
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Pull ESP-IDF image (retries transient registry errors)
+        run: |
+          for attempt in 1 2 3 4; do
+            docker pull "$IDF_IMAGE" && exit 0
+            echo "Pull failed (attempt $attempt), retrying..."
+            sleep $((attempt * 15))
+          done
+          exit 1
+      # Root in the container (pip installs into the IDF Python environment); the files
+      # are handed back to the runner user at the end.
+      - name: Build firmware, images, size report, symbols and SBOM
+        run: |
+          docker run --rm -v "$PWD:/project" -w /project -e "OWNER=$(id -u):$(id -g)" \
+            -e "SBOM_VERSION=$ESP_IDF_SBOM_VERSION" "$IDF_IMAGE" bash -c '
+              set -eo pipefail
+              trap "chown -R \"\$OWNER\" /project" EXIT
+              git config --global --add safe.directory "*"
+              idf.py build 2>&1 | tee build-output.log
+              idf.py merge-bin -o SimplrSSH-ci-release.bin
+              idf.py launcher-bin
+              python -m esp_idf_size --format json -o build/size.json build/SimplrSSH.map
+              xtensa-esp32s3-elf-nm --defined-only build/SimplrSSH.elf > build/symbols.txt
+              pip install --quiet "esp-idf-sbom==$SBOM_VERSION"
+              esp-idf-sbom create build/project_description.json -o build/sbom.spdx'
+      - name: Static internal RAM budget
+        run: python3 .github/scripts/check_firmware.py size build/size.json
+      - name: No compiler warnings in main/
+        run: python3 .github/scripts/check_firmware.py warnings build-output.log
+      - name: No key material in the images
+        run: |
+          images=$(ls build/SimplrSSH.bin build/bootloader/bootloader.bin build/SimplrSSH-ci-release.bin \
+                      build/SimplrSSH-v*-launcher.bin)
+          # shellcheck disable=SC2086
+          python3 .github/scripts/check_firmware.py secrets $images
+          # Negative control: the same scan must catch a real key appended to the image
+          ssh-keygen -q -t ed25519 -N "" -f "$RUNNER_TEMP/control_key"
+          cat build/SimplrSSH.bin "$RUNNER_TEMP/control_key" > "$RUNNER_TEMP/control.bin"
+          if python3 .github/scripts/check_firmware.py secrets "$RUNNER_TEMP/control.bin" > /dev/null; then
+            echo "::error::Negative control failed: the key-material scan did not catch a planted key"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/control_key" "$RUNNER_TEMP/control_key.pub" "$RUNNER_TEMP/control.bin"
+      - name: Upload build outputs for audit and network-surface
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tests-build
+          path: |
+            build/sbom.spdx
+            build/symbols.txt
+            build/size.json
+            sdkconfig
+          if-no-files-found: error
+          retention-days: 14
+
+  # g) audit: CVEs in what the firmware is built from (esp-idf-sbom queries the NVD).
+  #    High/critical findings block unless reviewed into .github/audit-baseline.txt; any
+  #    known exploited vulnerability blocks.
+  audit:
+    name: audit
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tests-build
+          path: tests-build
+      - name: Vulnerability report (esp-idf-sbom check, retries NVD hiccups)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet "esp-idf-sbom==$ESP_IDF_SBOM_VERSION"
+          for attempt in 1 2 3; do
+            # Exits 1 when it finds vulnerabilities; check_audit.py judges the report
+            "$RUNNER_TEMP/venv/bin/esp-idf-sbom" --no-progress check --format json -o vulns.json \
+              tests-build/build/sbom.spdx || true
+            [ -s vulns.json ] && grep -q '"records"' vulns.json && exit 0
+            echo "No report (attempt $attempt), retrying..."
+            sleep $((attempt * 30))
+          done
+          exit 1
+      - name: High / critical CVEs
+        run: python3 .github/scripts/check_audit.py vulns.json
+
+  # h) network-surface: the linked firmware and its generated sdkconfig keep the attack
+  #    surface closed (station-only WiFi, no listening sockets, servers, OTA, Bluetooth).
+  network-surface:
+    name: network-surface
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tests-build
+          path: tests-build
+      - name: Source rules
+        working-directory: test/guards
+        run: python3 -m unittest -v test_network_surface
+      - name: Linked symbols and generated sdkconfig
+        run: python3 .github/scripts/check_firmware.py surface tests-build/build/symbols.txt tests-build/sdkconfig
+
+  # i) secret-scan: gitleaks over the commits this push / pull request introduces (not the
+  #    whole history). Image pinned by tag and digest.
+  secret-scan:
+    name: secret-scan
+    needs: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The base commit must be present for gitleaks to diff against it.
+          fetch-depth: 0
+      # Range: base..head for a pull request, before..after for a push; a new branch or a
+      # force-push has no usable "before", so only the pushed commit is scanned. Context
+      # values arrive via env, never interpolated into the script.
+      - name: gitleaks (new commits)
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          BASE="${PR_BASE:-$PUSH_BEFORE}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ] \
+             || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            RANGE="HEAD~1..HEAD"
+          else
+            RANGE="${BASE}..HEAD"
+          fi
+          echo "Scanning commit range: $RANGE"
+          docker run --rm -v "$PWD:/repo" \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            zricethezav/gitleaks:v8.28.0@sha256:cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854 \
+            git /repo --redact --no-banner --log-opts="$RANGE"

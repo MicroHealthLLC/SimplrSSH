@@ -11,6 +11,8 @@
 #     are marked as pre-releases.
 #   - Pushing a tag vX.Y.Z releases exactly that version.
 #   - Pushes to other branches and pull requests only build ("<next>-dev.<sha>").
+#   - A release waits for the Tests run (tests.yml) of the same commit and is not published
+#     unless it passed (.github/scripts/wait-for-tests.sh).
 name: Build firmware
 
 on:
@@ -144,9 +146,32 @@ jobs:
             build/flash_args
           if-no-files-found: error
 
-  release:
+  # The quality gate: Tests runs on its own for every push; wait for its verdict on the
+  # commit being released instead of running it a second time
+  tests:
+    name: Wait for Tests
     if: needs.build.outputs.release == 'true'
     needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+          sparse-checkout: .github/scripts
+      - name: Wait for the Tests run of this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: bash .github/scripts/wait-for-tests.sh
+
+  release:
+    if: needs.build.outputs.release == 'true'
+    needs: [build, tests]
     runs-on: ubuntu-latest
     permissions:
       contents: write
