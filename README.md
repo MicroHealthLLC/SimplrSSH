@@ -115,4 +115,4 @@ one-shot commands instead, for example `top -n 1`.
   the unit tests on a PC (Linux, with `cmake`, `g++` and `libmbedtls-dev`):
   `cmake -S test/host -B build-host && cmake --build build-host && ctest --test-dir build-host`,
   and `python3 -m unittest discover -s test/guards`.
-- Contributor rules are in [CLAUDE.md](CLAUDE.md).
+- Contributor rules are in [AI_RULES.md](AI_RULES.md).

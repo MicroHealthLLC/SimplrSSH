@@ -1,5 +1,5 @@
 """
-Firmware rules from CLAUDE.md that can be checked in the source: settings access, task
+Firmware rules from AI_RULES.md that can be checked in the source: settings access, task
 stacks, collection bounds, logging hygiene, and the docs staying in step with the code.
 """
 
@@ -31,14 +31,14 @@ class Build(unittest.TestCase):
         present = {os.path.basename(f) for f in glob.glob(os.path.join(repo.MAIN, "*.cpp"))}
         self.assertEqual(listed, present, "main/CMakeLists.txt SOURCES must match main/*.cpp")
 
-    def test_claude_md_code_layout_covers_every_source(self):
-        layout = repo.read("CLAUDE.md").split("## Code layout", 1)[1].split("\n## ", 1)[0]
+    def test_ai_rules_code_layout_covers_every_source(self):
+        layout = repo.read("AI_RULES.md").split("## Code layout", 1)[1].split("\n## ", 1)[0]
         documented = set(re.findall(r"`main/([\w]+\.cpp)`", layout))
         # Small helpers without their own row: hardware glue and pure functions
         undocumented_ok = {"battery_measurement.cpp", "c3_keyboard.cpp"}
         present = {os.path.basename(f) for f in glob.glob(os.path.join(repo.MAIN, "*.cpp"))}
         self.assertEqual(sorted(present - documented - undocumented_ok), [],
-                         "add new source files to the Code layout table in CLAUDE.md")
+                         "add new source files to the Code layout table in AI_RULES.md")
         self.assertEqual(sorted(documented - present), [], "Code layout lists files that no longer exist")
 
 
@@ -74,7 +74,7 @@ class Settings(unittest.TestCase):
 
 
 class Tasks(unittest.TestCase):
-    # CLAUDE.md: keypad 8 KB, SSH receive 8 KB, trackball 2 KB, ChatGPT worker 10 KB
+    # AI_RULES.md: keypad 8 KB, SSH receive 8 KB, trackball 2 KB, ChatGPT worker 10 KB
     STACKS = {"keypad_task": 8192, "trackball_task": 2048, "ssh_rx": 8192, "chat": "WORKER_STACK",
               "models": "WORKER_STACK"}
 
@@ -83,7 +83,7 @@ class Tasks(unittest.TestCase):
         for code in SRC.values():
             for name, stack in re.findall(r'xTaskCreate\w*\(\s*\w+\s*,\s*"(\w+)"\s*,\s*(\w+)', code):
                 found[name] = int(stack) if stack.isdigit() else stack
-        self.assertEqual(found, self.STACKS, "a new or resized task needs CLAUDE.md updated (no long-lived tasks)")
+        self.assertEqual(found, self.STACKS, "a new or resized task needs AI_RULES.md updated (no long-lived tasks)")
         self.assertIn("WORKER_STACK = 10240", SRC["main/chat_app.cpp"])
 
     def test_no_busy_wait(self):
@@ -94,7 +94,7 @@ class Bounds(unittest.TestCase):
     def test_collection_bounds(self):
         header = repo.read("main", "include", "connection_profiles.hpp")
         terminal = repo.read("main", "ssh_terminal.cpp")
-        claude = repo.read("CLAUDE.md")
+        rules = repo.read("AI_RULES.md")
         profiles = int(re.search(r"#define PROFILE_MAX_COUNT (\d+)", header).group(1))
         networks = int(re.search(r"#define NETWORK_MAX_COUNT (\d+)", header).group(1))
         keys = int(re.search(r"MAX_KEYS = (\d+);", terminal).group(1))
@@ -102,7 +102,7 @@ class Bounds(unittest.TestCase):
         scrollback = int(re.search(r"SCROLLBACK_MAX = (\d+);", terminal).group(1))
         history = re.findall(r"command_history\.size\(\) > (\d+)", terminal)
         self.assertEqual(history, ["100"])
-        bounds = re.search(r"Bound every collection[^(]*\(([^)]*)\)", claude.replace("\n", " ")).group(1)
+        bounds = re.search(r"Bound every collection[^(]*\(([^)]*)\)", rules.replace("\n", " ")).group(1)
         self.assertIn("history 100", bounds)
         self.assertIn(f"profiles {profiles}", bounds)
         self.assertIn(f"networks {networks}", bounds)

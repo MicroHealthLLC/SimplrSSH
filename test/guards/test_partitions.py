@@ -1,6 +1,6 @@
 """
 Persistence: the partition layouts that keep users' settings across flashing and updates
-(CLAUDE.md, Persistence). Changing these offsets or sizes wipes settings in the field.
+(AI_RULES.md, Persistence). Changing these offsets or sizes wipes settings in the field.
 """
 
 import re

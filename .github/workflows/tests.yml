@@ -22,7 +22,7 @@
 #   typecheck        host compile of the firmware's hardware-independent sources and the
 #                    tests with -Wall -Wextra -Werror; Python byte-compile.
 #   unit-tests       host C++ tests (command redaction, profile store, vault) with ASan and
-#                    UBSan, and the Python guard tests that keep CLAUDE.md's rules (supply
+#                    UBSan, and the Python guard tests that keep AI_RULES.md's rules (supply
 #                    chain, settings access, task stacks, bounds, logging) and the CI scripts.
 #   persistence      the settings that must survive flashing and updates: partition layouts,
 #                    settings partition choice, SD backup/restore of untrusted files, records
@@ -170,10 +170,10 @@ jobs:
           ctest --test-dir build-host -L unit --output-on-failure
       - name: Guard tests and CI script tests
         working-directory: test/guards
-        run: python3 -m unittest -v test_supply_chain test_firmware_rules test_ci_scripts
+        run: python3 -m unittest -v test_supply_chain test_firmware_rules test_rules_file test_ci_scripts
 
   # e) persistence: users' settings survive flashing, launcher installs, updates and SD
-  #    restores; older records still load (CLAUDE.md, Persistence).
+  #    restores; older records still load (AI_RULES.md, Persistence).
   persistence:
     name: persistence
     needs: unit-tests

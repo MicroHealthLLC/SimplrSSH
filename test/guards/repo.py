@@ -1,6 +1,6 @@
 """
 Helpers shared by the guard tests: paths and small readers for the repository's files.
-Guard tests keep the rules in CLAUDE.md from regressing; they read files, never build.
+Guard tests keep the rules in AI_RULES.md from regressing; they read files, never build.
 """
 
 import glob

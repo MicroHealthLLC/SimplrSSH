@@ -1,5 +1,5 @@
 """
-Network surface (CLAUDE.md, Scope and Security): station-only WiFi, IPv4, no listening
+Network surface (AI_RULES.md, Scope and Security): station-only WiFi, IPv4, no listening
 sockets, no servers, OTA or Bluetooth, and the only fixed endpoint is api.openai.com over
 verified TLS. The built firmware is checked too, by check_firmware_surface.py in CI.
 """

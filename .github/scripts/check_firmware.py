@@ -4,7 +4,7 @@ Checks on the built firmware, used by the Tests workflow (build and network-surf
 
   check_firmware.py size <size.json> [--budget BYTES]
       Static internal RAM (DIRAM: .data + .bss + IRAM code placed in DIRAM), from
-      `python -m esp_idf_size --format json`, must stay within the budget (CLAUDE.md, Memory).
+      `python -m esp_idf_size --format json`, must stay within the budget (AI_RULES.md, Memory).
 
   check_firmware.py warnings <build-log>
       No compiler warnings in main/, except KNOWN_WARNINGS (reported, not failed).
@@ -15,7 +15,7 @@ Checks on the built firmware, used by the Tests workflow (build and network-surf
   check_firmware.py surface <nm-output> <sdkconfig>
       The linked firmware has no listening sockets, servers, OTA, Bluetooth, mDNS or access
       point, and does have TLS certificate-bundle verification and SSH host key checks; the
-      generated sdkconfig keeps the attack surface closed (CLAUDE.md, Scope and Security).
+      generated sdkconfig keeps the attack surface closed (AI_RULES.md, Scope and Security).
 
 Each prints GitHub annotations for problems and exits 1 if there are any.
 """
@@ -25,7 +25,7 @@ import os
 import re
 import sys
 
-# Static internal RAM ceiling. CLAUDE.md: "~115 KB of internal RAM is used statically; keep
+# Static internal RAM ceiling. AI_RULES.md: "~115 KB of internal RAM is used statically; keep
 # it there or lower". The small headroom absorbs toolchain noise; raise it only deliberately.
 INTERNAL_RAM_BUDGET = 118 * 1024
 
@@ -47,7 +47,7 @@ KEY_MATERIAL = [
     (rb"gh[pousr]_[A-Za-z0-9]{36}", "GitHub token"),
 ]
 
-# Linked symbols that would open the attack surface CLAUDE.md keeps closed
+# Linked symbols that would open the attack surface AI_RULES.md keeps closed
 FORBIDDEN_SYMBOLS = [
     (r"lwip_listen|lwip_accept|lwip_bind", "listening socket"),
     (r"httpd_\w+|esp_https_server\w*", "HTTP server"),
@@ -178,7 +178,7 @@ def cmd_size(args):
              f"| Flash (code + rodata) | {size.get('used_flash_non_ram', 0):,} bytes | app partition |"]
     summary("\n".join(lines))
     if used > budget:
-        error(f"Static internal RAM {used} bytes exceeds the {budget}-byte budget (CLAUDE.md, Memory): "
+        error(f"Static internal RAM {used} bytes exceeds the {budget}-byte budget (AI_RULES.md, Memory): "
               "move buffers to PSRAM or explain the increase and raise INTERNAL_RAM_BUDGET")
         return 1
     return 0

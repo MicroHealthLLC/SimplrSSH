@@ -1,6 +1,6 @@
 /*
  * settings_nvs::init(): picks the partition that holds the user's settings and never erases
- * a launcher's own "nvs" (CLAUDE.md, Persistence).
+ * a launcher's own "nvs" (AI_RULES.md, Persistence).
  */
 
 #include "helpers.hpp"
