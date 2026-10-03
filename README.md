@@ -111,4 +111,8 @@ one-shot commands instead, for example `top -n 1`.
 - Security details and how to report a vulnerability are in [SECURITY.md](SECURITY.md).
 - To build it yourself you need ESP-IDF v5.5.1: run `idf.py build`, then
   `idf.py merge-bin -o SimplrSSH-v<version>-release.bin` and `idf.py launcher-bin`.
+- Every push and pull request runs the **Tests** checks (`.github/workflows/tests.yml`). To run
+  the unit tests on a PC (Linux, with `cmake`, `g++` and `libmbedtls-dev`):
+  `cmake -S test/host -B build-host && cmake --build build-host && ctest --test-dir build-host`,
+  and `python3 -m unittest discover -s test/guards`.
 - Contributor rules are in [CLAUDE.md](CLAUDE.md).

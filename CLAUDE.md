@@ -22,7 +22,8 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 ## Memory (internal RAM is the scarcest resource)
 
 - Budget: ~115 KB of internal RAM is used statically; keep it there or lower. Check with
-  `idf.py size` before and after a change and mention the delta in the PR.
+  `idf.py size` before and after a change and mention the delta in the PR. The Tests build
+  job fails above `INTERNAL_RAM_BUDGET` (118 KiB) in `.github/scripts/check_firmware.py`.
 - Large or long-lived buffers belong in PSRAM (`heap_caps_malloc(..., MALLOC_CAP_SPIRAM)`, or
   let the heap place allocations >16 KB there). Internal RAM is for stacks, DMA and small objects.
 - No large arrays on task stacks. Stacks: keypad 8 KB (runs all terminal work), SSH receive
@@ -32,7 +33,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   `bsp_display_lock()` and check `chat_generation` so a closed view is never used.
 - Audio (I2S mic/speaker) is started only while used; recordings go to PSRAM.
 - Bound every collection that grows from user or network input (history 100, profiles 20,
-  networks 10, SD keys 8 / 48 KB, terminal text ~4 KB).
+  networks 20, SD keys 8 / 48 KB, terminal text ~6 KB).
 - Avoid heap churn in hot paths (SSH receive/render loop): reuse buffers, don't build
   temporary strings per byte.
 
@@ -49,7 +50,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 - **Secrets** (WiFi passwords, SSH passwords, key passphrases, PINs):
   - Store only through the vault (`main/secret_vault.cpp`), never in NVS, files or logs.
   - Mask while typing (`wizard_input_masked()`) and when echoing; keep out of command history
-    (`redact_secrets()` in `ssh_terminal.cpp`).
+    (`redact_secrets()` in `command_redact.cpp`).
   - Wipe after use with `vault::wipe()` / `mbedtls_platform_zeroize()`.
 - **Never log** user input, commands, terminal data, passwords or key material. Log levels:
   `ESP_LOGE/W` for problems, `ESP_LOGI` sparingly and without user data.
@@ -102,7 +103,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 | File | Responsibility |
 |---|---|
 | `main/deck_base.cpp` | Boot, hardware init, SD key loading, input tasks |
-| `main/ssh_terminal.cpp` | Terminal UI, command parsing, WiFi driver, SSH connection |
+| `main/ssh_terminal.cpp`, `main/command_redact.cpp` | Terminal UI, command parsing, WiFi driver, SSH connection; password redaction |
 | `main/known_hosts.cpp` | Host key verification (TOFU), `hosts` command |
 | `main/profile_menu.cpp` | Menu/wizard plumbing, SSH profiles |
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
@@ -120,7 +121,18 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   launcher image `idf.py launcher-bin` (-> `build/SimplrSSH-v<ver>-launcher.bin`).
 - Match the surrounding style (4-space indent, `snake_case`, brace on its own line for
   functions, same line for control flow).
-- CI must build; the code-quality workflow is advisory but aim for zero new warnings.
+- CI must build, and the **Tests** workflow (`.github/workflows/tests.yml`) must pass: it runs
+  on every push and pull request, and releases wait for it. Its jobs, in order: install
+  (components match `dependencies.lock`), lint (actionlint, ruff, cppcheck), typecheck, unit-tests,
+  persistence, build (RAM budget, zero compiler warnings in `main/`, no key material), audit
+  (CVEs), network-surface (linked symbols, generated sdkconfig), secret-scan. The code-quality
+  workflow stays advisory.
+- Tests live in `test/`: `test/host` compiles hardware-independent firmware sources unchanged
+  for Linux against in-memory stand-ins for NVS, partitions and logging (`idf_stubs/`,
+  `fake_idf.cpp`); `test/guards` holds Python checks of the rules in this file. Keep logic that
+  can run off-device free of ESP-IDF/LVGL headers (like `command_redact.cpp`) and test it there;
+  extend the guards when adding a rule. Reviewed CVEs go in `.github/audit-baseline.txt`, with a
+  reason, only until the fix ships.
 - Versions come from git tags; CI computes them (`.github/scripts/plan_release.py`) and
   passes `FIRMWARE_VERSION` to the build. Every push to `main` releases the next patch;
   manual runs pick branch (`main`/`integration` = pre-release), bump or exact version.

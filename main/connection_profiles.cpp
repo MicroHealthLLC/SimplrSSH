@@ -1,7 +1,7 @@
 /*
  * Connection Profiles Storage
  * Each record is stored as one NVS string ("p0".."p19" in the "profiles"
- * namespace, "n0".."n9" in the "wifi_nets" namespace), with fields separated by
+ * namespace, "n0".."n19" in the "wifi_nets" namespace), with fields separated by
  * the ASCII unit separator (0x1F), which cannot be typed on the keyboard and so
  * never appears inside a field.
  */

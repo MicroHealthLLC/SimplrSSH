@@ -4,6 +4,7 @@ set(SOURCES
     "battery_measurement.cpp"
     "c3_keyboard.cpp"
     "ssh_terminal.cpp"
+    "command_redact.cpp"
     "connection_profiles.cpp"
     "profile_menu.cpp"
     "wifi_menu.cpp"
