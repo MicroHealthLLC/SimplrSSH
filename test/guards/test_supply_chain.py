@@ -1,6 +1,7 @@
 """
 Supply chain: every GitHub Action is pinned to a commit SHA, every container image to a
-digest, and every ESP-IDF component to an exact version recorded in dependencies.lock.
+digest, and every ESP-IDF component to an exact version recorded in each board's lock file
+(dependencies.lock for the T-Deck, dependencies.lock.esp32p4 for the Tab5).
 """
 
 import re
@@ -57,21 +58,41 @@ class ActionsPinned(unittest.TestCase):
         self.assertIn("package-ecosystem: github-actions", repo.read(".github", "dependabot.yml"))
 
 
+# Each board's lock file and the target its components are resolved for (CMakeLists.txt)
+LOCKS = {"dependencies.lock": "esp32s3", "dependencies.lock.esp32p4": "esp32p4"}
+
+
 def manifest_dependencies():
+    """{name: (version, target or None)} from main/idf_component.yml: either `name: 'x.y.z'`
+    or a block with `version:` and an optional `rules: - if: 'target == ...'`."""
     deps = {}
+    current = None
     for line in repo.read("main", "idf_component.yml").splitlines():
         m = re.match(r"^  ([\w./-]+):\s*'([^']+)'", line)
         if m:
-            deps[m.group(1)] = m.group(2)
+            deps[m.group(1)] = (m.group(2), None)
+            current = None
+            continue
+        m = re.match(r"^  ([\w./-]+):\s*(?:#.*)?$", line)
+        if m:
+            current = m.group(1)
+            deps[current] = (None, None)
+            continue
+        m = re.match(r"^    version:\s*'([^']+)'", line)
+        if m and current:
+            deps[current] = (m.group(1), deps[current][1])
+        m = re.match(r"^\s+- if:\s*'target == (\w+)'", line)
+        if m and current:
+            deps[current] = (deps[current][0], m.group(1))
     return deps
 
 
-def lock_entries():
-    """{name: {'version':..., 'component_hash':..., 'type':...}} from dependencies.lock."""
+def lock_entries(name="dependencies.lock"):
+    """{name: {'version':..., 'component_hash':..., 'type':...}} from a lock file."""
     entries = {}
     current = None
     in_deps = False
-    for line in repo.read("dependencies.lock").splitlines():
+    for line in repo.read(name).splitlines():
         if line == "dependencies:":
             in_deps = True
             continue
@@ -94,28 +115,42 @@ def lock_entries():
 
 class ComponentsPinned(unittest.TestCase):
     def test_direct_dependencies_exact(self):
-        for name, version in manifest_dependencies().items():
+        for name, (version, _target) in manifest_dependencies().items():
             if name == "idf":
                 continue
             with self.subTest(component=name):
-                self.assertRegex(version, r"^\d+\.\d+\.\d+(~\d+)?$", "pin components to an exact version")
+                self.assertRegex(version or "", r"^\d+\.\d+\.\d+(~\d+)?$", "pin components to an exact version")
+
+    def test_board_rules_name_a_known_target(self):
+        for name, (_version, target) in manifest_dependencies().items():
+            with self.subTest(component=name):
+                self.assertIn(target, (None, *LOCKS.values()))
 
     def test_direct_dependencies_locked_at_same_version(self):
-        lock = lock_entries()
-        for name, version in manifest_dependencies().items():
-            if name == "idf":
-                continue
-            with self.subTest(component=name):
-                self.assertIn(name, lock, "run idf.py update-dependencies and commit dependencies.lock")
-                self.assertEqual(lock[name].get("version"), version)
+        for lock_name, target in LOCKS.items():
+            lock = lock_entries(lock_name)
+            with self.subTest(lock=lock_name):
+                self.assertIn(f"target: {target}", repo.read(lock_name))
+            for name, (version, only) in manifest_dependencies().items():
+                if name == "idf" or only not in (None, target):
+                    continue
+                with self.subTest(lock=lock_name, component=name):
+                    self.assertIn(name, lock, "run idf.py update-dependencies for this board and commit its lock")
+                    self.assertEqual(lock[name].get("version"), version)
 
     def test_registry_components_have_hashes(self):
-        for name, info in lock_entries().items():
-            if name == "idf":
-                continue
-            with self.subTest(component=name):
-                self.assertEqual(info.get("type"), "service", "only registry components (no local paths)")
-                self.assertRegex(info.get("component_hash", ""), r"^[0-9a-f]{64}$")
+        for lock_name in LOCKS:
+            for name, info in lock_entries(lock_name).items():
+                if name == "idf":
+                    continue
+                with self.subTest(lock=lock_name, component=name):
+                    self.assertEqual(info.get("type"), "service", "only registry components (no local paths)")
+                    self.assertRegex(info.get("component_hash", ""), r"^[0-9a-f]{64}$")
+
+    def test_board_locks_selected_by_target(self):
+        cmake = repo.read("CMakeLists.txt")
+        self.assertRegex(cmake, r'IDF_TARGET STREQUAL "esp32p4"\)\s*\n\s*idf_build_set_property\(DEPENDENCIES_LOCK '
+                                r'"\$\{CMAKE_CURRENT_LIST_DIR\}/dependencies.lock.esp32p4"\)')
 
     def test_ci_idf_version_matches_manifest(self):
         idf = re.search(r"(?m)^  idf:\s*\n\s+version:\s*'([^']+)'", repo.read("main", "idf_component.yml")).group(1)

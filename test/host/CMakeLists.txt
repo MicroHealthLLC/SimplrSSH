@@ -34,6 +34,7 @@ add_library(firmware STATIC
     ${MAIN_DIR}/secret_vault.cpp
     ${MAIN_DIR}/settings_backup.cpp
     ${MAIN_DIR}/settings_nvs.cpp
+    ${MAIN_DIR}/tab5_keymap.cpp
     fake_idf.cpp
 )
 # The stand-ins come first so they shadow nothing else; main/include is the firmware's own
@@ -44,6 +45,7 @@ add_executable(unit_tests test_main.cpp
     tests/test_command_redact.cpp
     tests/test_connection_profiles.cpp
     tests/test_secret_vault.cpp
+    tests/test_tab5_keymap.cpp
 )
 target_link_libraries(unit_tests firmware)
 

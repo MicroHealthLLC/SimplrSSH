@@ -44,10 +44,12 @@ class DirectFlashLayout(unittest.TestCase):
         self.assertEqual(self.parts["factory"]["offset"] % 0x10000, 0)
 
     def test_sdkconfig_uses_this_table(self):
-        cfg = repo.sdkconfig()
-        self.assertEqual(cfg.get("CONFIG_PARTITION_TABLE_CUSTOM_FILENAME"), '"partitions.csv"')
-        self.assertEqual(cfg.get("CONFIG_PARTITION_TABLE_OFFSET"), "0x8000")
-        self.assertEqual(cfg.get("CONFIG_ESPTOOLPY_FLASHSIZE"), '"16MB"')
+        for name in ("sdkconfig", "sdkconfig.tab5"):   # Both boards: same layout, same settings rules
+            cfg = repo.sdkconfig(name)
+            with self.subTest(sdkconfig=name):
+                self.assertEqual(cfg.get("CONFIG_PARTITION_TABLE_CUSTOM_FILENAME"), '"partitions.csv"')
+                self.assertEqual(cfg.get("CONFIG_PARTITION_TABLE_OFFSET"), "0x8000")
+                self.assertEqual(cfg.get("CONFIG_ESPTOOLPY_FLASHSIZE"), '"16MB"')
 
 
 class LauncherLayout(unittest.TestCase):

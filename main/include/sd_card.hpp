@@ -2,8 +2,9 @@
  * SD Card
  * The T-Deck's SD card shares its SPI pins with the display. At boot (before
  * the display starts) it is mounted on its own SPI3 bus; afterwards it is
- * mounted as a second device on the display's SPI2 bus. Mount only for the
- * duration of an operation, while holding the display lock.
+ * mounted as a second device on the display's SPI2 bus. The Tab5's card has its
+ * own SDMMC slot. Mount only for the duration of an operation, while holding
+ * the display lock.
  * Mounts are read-only unless writable is asked for; the card is never formatted.
  */
 

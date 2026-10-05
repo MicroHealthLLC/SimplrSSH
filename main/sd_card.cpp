@@ -1,49 +1,39 @@
 /*
  * SD Card
- * Mounting the T-Deck SD card (SPI, CS on GPIO 39) at boot and at runtime, and
- * loading SSH private keys from /sdcard/ssh_keys.
+ * Mounting the SD card at boot and at runtime, and loading SSH private keys from
+ * /sdcard/ssh_keys. T-Deck: SPI, CS on GPIO 39, sharing SCK/MOSI/MISO with the display.
+ * Tab5: its own 4-bit SDMMC slot (GPIO 39-44), powered by the ESP32-P4's LDO channel 4.
  */
 
 #include "sd_card.hpp"
 #include "ssh_terminal.hpp"
-#include "utilities.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "diskio_impl.h"
 #include "diskio_sdmmc.h"
-#include "esp_rom_gpio.h"
 #include "driver/gpio.h"
-#include "driver/sdspi_host.h"
-#include "driver/spi_common.h"
-#include "soc/spi_periph.h"
 #include <cstring>
 #include <cstdlib>
 #include <dirent.h>
 #include <sys/stat.h>
 
+#if CONFIG_IDF_TARGET_ESP32P4
+#include "bsp/esp-bsp.h"
+#include "driver/sdmmc_host.h"
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#else
+#include "utilities.h"
+#include "esp_rom_gpio.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
+#include "soc/spi_periph.h"
+#endif
+
 static const char *TAG = "SD_CARD";
 
 const char* const sdcard::MOUNT_POINT = "/sdcard";
 
-// The display (esp_bsp_generic) owns SPI2 on the shared SCK/MOSI pins
-static const spi_host_device_t DISPLAY_SPI_HOST = SPI2_HOST;
-static const spi_host_device_t BOOT_SPI_HOST = SPI3_HOST;
-
 static sdmmc_card_t* s_card = NULL;
-static bool s_owns_bus = false;
-
-// The SD driver leaves CS as a floating input when it releases the card. The display
-// keeps clocking data on the same SCK/MOSI lines, so a floating CS lets the card take
-// pixel data as commands (including writes) and corrupt the file system. Keep it high.
-static void deselect_card()
-{
-    gpio_set_level(BOARD_SDCARD_CS, 1);  // Level first, so CS never pulses low
-    gpio_config_t out = {};
-    out.pin_bit_mask = 1ULL << BOARD_SDCARD_CS;
-    out.mode = GPIO_MODE_OUTPUT;
-    out.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&out);
-}
 
 // Read-only disk driver: reads go to the card, writes are refused before they reach it
 static DSTATUS ro_status(BYTE pdrv)
@@ -85,12 +75,120 @@ static const ff_diskio_impl_t s_read_only_impl = {
     .ioctl = &ro_ioctl,
 };
 
+// Never formats the user's card; read-only unless writable is asked for
+static esp_vfs_fat_sdmmc_mount_config_t mount_config()
+{
+    esp_vfs_fat_sdmmc_mount_config_t config = {};
+    config.format_if_mount_failed = false;  // Never format the user's card
+    config.max_files = 4;
+    config.allocation_unit_size = 16 * 1024;
+    return config;
+}
+
+static void make_read_only()
+{
+    // Mounting only reads the card; from here on FATFS refuses any change (FR_WRITE_PROTECTED)
+    ff_diskio_register(ff_diskio_get_pdrv_card(s_card), &s_read_only_impl);
+}
+
+#if CONFIG_IDF_TARGET_ESP32P4
+
+// Tab5: the SD card has SDMMC slot 0 to itself (the WiFi co-processor uses slot 1 of the same
+// controller). Unmounting releases only slot 0 (SDMMC_HOST_DEFAULT's deinit_p), so WiFi keeps
+// running. The card's I/O supply is the ESP32-P4's on-chip LDO channel 4.
+static sd_pwr_ctrl_handle_t s_sd_power = NULL;   // Created once, kept
+
+static esp_err_t mount_sdmmc(bool writable)
+{
+    if (!s_sd_power) {
+        sd_pwr_ctrl_ldo_config_t ldo = {};
+        ldo.ldo_chan_id = 4;
+        esp_err_t err = sd_pwr_ctrl_new_on_chip_ldo(&ldo, &s_sd_power);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "SD card power failed (%s)", esp_err_to_name(err));
+            return err;
+        }
+    }
+    esp_vfs_fat_sdmmc_mount_config_t config = mount_config();
+
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.slot = SDMMC_HOST_SLOT_0;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+    host.pwr_ctrl_handle = s_sd_power;
+
+    sdmmc_slot_config_t slot = {};
+    slot.cd = SDMMC_SLOT_NO_CD;
+    slot.wp = SDMMC_SLOT_NO_WP;
+    slot.clk = BSP_SD_CLK;
+    slot.cmd = BSP_SD_CMD;
+    slot.d0 = BSP_SD_D0;
+    slot.d1 = BSP_SD_D1;
+    slot.d2 = BSP_SD_D2;
+    slot.d3 = BSP_SD_D3;
+    slot.width = 4;
+
+    esp_err_t err = esp_vfs_fat_sdmmc_mount(sdcard::MOUNT_POINT, &host, &slot, &config, &s_card);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "No SD card (%s)", esp_err_to_name(err));
+        s_card = NULL;
+        return err;
+    }
+    if (!writable) {
+        make_read_only();
+    }
+    return ESP_OK;
+}
+
+esp_err_t sdcard::mount_at_boot()
+{
+    return mount_sdmmc(false);
+}
+
+void sdcard::share_display_bus()
+{
+    // Nothing to share: the SD card has its own pins
+}
+
+esp_err_t sdcard::mount(bool writable)
+{
+    if (s_card) {
+        return ESP_OK;
+    }
+    return mount_sdmmc(writable);
+}
+
+void sdcard::unmount()
+{
+    if (s_card) {
+        esp_vfs_fat_sdcard_unmount(MOUNT_POINT, s_card);
+        s_card = NULL;
+    }
+}
+
+#else  // T-Deck
+
+// The display (esp_bsp_generic) owns SPI2 on the shared SCK/MOSI pins
+static const spi_host_device_t DISPLAY_SPI_HOST = SPI2_HOST;
+static const spi_host_device_t BOOT_SPI_HOST = SPI3_HOST;
+
+static bool s_owns_bus = false;
+
+// The SD driver leaves CS as a floating input when it releases the card. The display
+// keeps clocking data on the same SCK/MOSI lines, so a floating CS lets the card take
+// pixel data as commands (including writes) and corrupt the file system. Keep it high.
+static void deselect_card()
+{
+    gpio_set_level(BOARD_SDCARD_CS, 1);  // Level first, so CS never pulses low
+    gpio_config_t out = {};
+    out.pin_bit_mask = 1ULL << BOARD_SDCARD_CS;
+    out.mode = GPIO_MODE_OUTPUT;
+    out.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&out);
+}
+
 static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz, bool writable)
 {
-    esp_vfs_fat_sdmmc_mount_config_t mount_config = {};
-    mount_config.format_if_mount_failed = false;  // Never format the user's card
-    mount_config.max_files = 4;
-    mount_config.allocation_unit_size = 16 * 1024;
+    esp_vfs_fat_sdmmc_mount_config_t config = mount_config();
 
     sdmmc_host_t sd_host = SDSPI_HOST_DEFAULT();
     sd_host.max_freq_khz = max_freq_khz;
@@ -99,7 +197,7 @@ static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz, bool writabl
     slot_config.gpio_cs = BOARD_SDCARD_CS;
     slot_config.host_id = host;
 
-    esp_err_t err = esp_vfs_fat_sdspi_mount(sdcard::MOUNT_POINT, &sd_host, &slot_config, &mount_config, &s_card);
+    esp_err_t err = esp_vfs_fat_sdspi_mount(sdcard::MOUNT_POINT, &sd_host, &slot_config, &config, &s_card);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "No SD card (%s)", esp_err_to_name(err));
         s_card = NULL;
@@ -107,8 +205,7 @@ static esp_err_t mount_on(spi_host_device_t host, int max_freq_khz, bool writabl
         return err;
     }
     if (!writable) {
-        // Mounting only reads the card; from here on FATFS refuses any change (FR_WRITE_PROTECTED)
-        ff_diskio_register(ff_diskio_get_pdrv_card(s_card), &s_read_only_impl);
+        make_read_only();
     }
     return ESP_OK;
 }
@@ -170,6 +267,8 @@ void sdcard::unmount()
     }
 }
 
+#endif
+
 int sdcard::load_ssh_keys(SSHTerminal* terminal)
 {
     // Open the ssh_keys directory
@@ -214,7 +313,7 @@ int sdcard::load_ssh_keys(SSHTerminal* terminal)
         ESP_LOGI(TAG, "Processing PEM file: %s", entry->d_name);
         
         // Build full file path
-        char filepath[256];
+        char filepath[sizeof("/sdcard/ssh_keys/") + sizeof(entry->d_name)];
         snprintf(filepath, sizeof(filepath), "%s/%s", keys_dir, entry->d_name);
         
         // Open and read the key file

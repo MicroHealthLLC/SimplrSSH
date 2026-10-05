@@ -2,6 +2,7 @@
 
 # ESP-IDF build output and downloaded components (restored from dependencies.lock)
 build/
+build-tab5/
 managed_components/
 
 # Host unit tests (test/host)

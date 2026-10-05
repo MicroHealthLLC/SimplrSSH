@@ -1,7 +1,7 @@
 /*
  * ChatGPT App
  * One chat session with an OpenAI model: your messages right-aligned, replies
- * left-aligned, the input line at the bottom. Hold the trackball to talk
+ * left-aligned, the input line at the bottom. Hold the trackball (Tab5: Ctrl+Space) to talk
  * (Whisper), optionally hear the reply (TTS). Network and audio work runs in a
  * short-lived worker task, so the screen and keyboard stay responsive.
  *
@@ -17,6 +17,7 @@
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "bsp/esp-bsp.h"
+#include "board.hpp"
 #include "settings_nvs.hpp"
 #include "mbedtls/platform_util.h"
 #include <algorithm>
@@ -293,7 +294,7 @@ lv_obj_t* SSHTerminal::chat_add_bubble(int kind, const std::string& text)
     lv_obj_t* label = lv_label_create(chat_view);
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(label, lv_pct(100));
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(label, board::ui().input, 0);
     lv_obj_set_style_text_align(label, kind == BUBBLE_USER ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_color(label, lv_color_hex(kind == BUBBLE_USER ? 0xFFFF00 : kind == BUBBLE_AI ? 0x00FF00 : 0x8080A0), 0);
     lv_label_set_text(label, text.c_str());
@@ -373,8 +374,8 @@ void SSHTerminal::open_chat()
         lv_obj_set_style_border_color(chat_view, lv_color_hex(0x00FF00), 0);
         lv_obj_set_style_border_width(chat_view, 2, 0);
         lv_obj_set_style_radius(chat_view, 0, 0);
-        lv_obj_set_style_pad_all(chat_view, 4, 0);
-        lv_obj_set_style_pad_row(chat_view, 6, 0);
+        lv_obj_set_style_pad_all(chat_view, board::ui().gap, 0);
+        lv_obj_set_style_pad_row(chat_view, board::ui().gap * 3 / 2, 0);
         lv_obj_set_flex_flow(chat_view, LV_FLEX_FLOW_COLUMN);
         // Drag or roll the trackball to scroll back; a thin bar shows only while scrolling
         lv_obj_set_scroll_dir(chat_view, LV_DIR_VER);
@@ -385,7 +386,7 @@ void SSHTerminal::open_chat()
         lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(side_panel);
 
-        chat_add_bubble(BUBBLE_INFO, "ChatGPT (" + chat_model + ") - type, or hold the trackball to talk.\n"
+        chat_add_bubble(BUBBLE_INFO, "ChatGPT (" + chat_model + ") - type, or " + board::HINT_TALK + " to talk.\n"
                                      "'clear' new chat | 'settings' | 'exit' menu");
         for (const auto& m : chat_history) {
             chat_add_bubble(m.from_user ? BUBBLE_USER : BUBBLE_AI, m.text);
@@ -535,7 +536,7 @@ void SSHTerminal::chat_job()
         std::string heard;
         int level = 0;
         if (n < audio::MIC_RATE / 2) {
-            chat_ui_bubble(gen, BUBBLE_INFO, "Too short - hold the trackball while you speak.");
+            chat_ui_bubble(gen, BUBBLE_INFO, std::string("Too short - ") + board::HINT_TALK + " while you speak.");
         } else if ((level = audio::normalize(voice, n)) < MIN_VOICE_PEAK) {
             // Nothing worth uploading: say so instead of sending silence to OpenAI
             chat_ui_bubble(gen, BUBBLE_INFO, "The microphone heard nothing (level " + std::to_string(level) +

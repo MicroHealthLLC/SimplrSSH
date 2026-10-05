@@ -1,7 +1,11 @@
-# Builds the LilyGO T-Deck (ESP32-S3) firmware and packages it as two merged images:
+# Builds the firmware for both boards from the same sources and packages each as two
+# merged images:
+#   LilyGO T-Deck (ESP32-S3):
 #   - SimplrSSH-v<version>-release.bin, to flash at offset 0x0 (DIO, 80 MHz, 16 MB)
 #   - SimplrSSH-v<version>-launcher.bin, to install with a launcher such as
 #     bmorcelli/Launcher (same app, partitions_launcher.csv with the settings partition)
+#   M5Stack Tab5 with the Tab5 Keyboard (ESP32-P4):
+#   - SimplrSSH-Tab5-v<version>-release.bin (flash at 0x0) and SimplrSSH-Tab5-v<version>-launcher.bin
 #
 # Versions and releases (see .github/scripts/plan_release.py):
 #   - Every push to main publishes a release, auto-incrementing the patch number from
@@ -99,6 +103,26 @@ jobs:
             sha256sum SimplrSSH-v${{ steps.plan.outputs.version }}-release.bin > SimplrSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256 &&
             sha256sum SimplrSSH-v${{ steps.plan.outputs.version }}-launcher.bin > SimplrSSH-v${{ steps.plan.outputs.version }}-launcher.bin.sha256
 
+      # The Tab5 from an empty managed_components/ (the boards' components differ), into
+      # build-tab5/; its images are copied to build/ so the artifact keeps one flat layout
+      - name: Build and merge Tab5 image (ESP-IDF ${{ env.ESP_IDF_VERSION }})
+        uses: espressif/esp-idf-ci-action@e6f5c74232b1ccd4c97ed641f1e48553853f1fd5 # v1.2.0
+        with:
+          esp_idf_version: v5.5.1@sha256:dfa2d076c796769c07c155eba6c672b9f395aec943b2ba3701b73379b5f9e884  # espressif/idf:v5.5.1 pinned by digest
+          target: esp32p4
+          extra_docker_args: -e FIRMWARE_VERSION=${{ steps.plan.outputs.version }}
+          # The action wraps this in bash -c '...', so it must not contain single quotes
+          command: >-
+            set -o pipefail &&
+            rm -rf managed_components &&
+            idf.py -B build-tab5 -D IDF_TARGET=esp32p4 -D SDKCONFIG=sdkconfig.tab5 build 2>&1 | tee build-output-tab5.log &&
+            idf.py -B build-tab5 -D IDF_TARGET=esp32p4 -D SDKCONFIG=sdkconfig.tab5 merge-bin -o SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-release.bin &&
+            idf.py -B build-tab5 -D IDF_TARGET=esp32p4 -D SDKCONFIG=sdkconfig.tab5 launcher-bin &&
+            cd build-tab5 &&
+            sha256sum SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-release.bin > SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-release.bin.sha256 &&
+            sha256sum SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-launcher.bin > SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-launcher.bin.sha256 &&
+            cp SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-*.bin SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-*.bin.sha256 ../build/
+
       - name: Summarize
         env:
           VERSION: ${{ steps.plan.outputs.version }}
@@ -114,6 +138,9 @@ jobs:
             echo "|---|---|---|---|"
             echo "| \`$(basename "$bin")\` | $(stat -c %s "$bin") bytes | flash at \`0x0\` (DIO, 80 MHz, 16 MB) | \`$(cut -d' ' -f1 "$bin.sha256")\` |"
             echo "| \`$(basename "$launcher")\` | $(stat -c %s "$launcher") bytes | with a launcher (bmorcelli/Launcher) | \`$(cut -d' ' -f1 "$launcher.sha256")\` |"
+            for f in "build/SimplrSSH-Tab5-v$VERSION-release.bin" "build/SimplrSSH-Tab5-v$VERSION-launcher.bin"; do
+              echo "| \`$(basename "$f")\` | $(stat -c %s "$f") bytes | Tab5 (ESP32-P4) | \`$(cut -d' ' -f1 "$f.sha256")\` |"
+            done
             echo ""
             echo "Flash: \`esptool.py --chip esp32s3 --baud 921600 write_flash 0x0 $(basename "$bin")\`"
             echo ""
@@ -128,7 +155,9 @@ jobs:
       - name: Report compiler warnings (non-blocking)
         if: always()
         continue-on-error: true
-        run: python3 .github/scripts/report_warnings.py build-output.log
+        run: |
+          python3 .github/scripts/report_warnings.py build-output.log
+          python3 .github/scripts/report_warnings.py build-output-tab5.log
 
       - name: Upload firmware
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -139,6 +168,10 @@ jobs:
             build/SimplrSSH-v${{ steps.plan.outputs.version }}-release.bin.sha256
             build/SimplrSSH-v${{ steps.plan.outputs.version }}-launcher.bin
             build/SimplrSSH-v${{ steps.plan.outputs.version }}-launcher.bin.sha256
+            build/SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-release.bin
+            build/SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-release.bin.sha256
+            build/SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-launcher.bin
+            build/SimplrSSH-Tab5-v${{ steps.plan.outputs.version }}-launcher.bin.sha256
             build/SimplrSSH.bin
             build/bootloader/bootloader.bin
             build/partition_table/partition-table.bin
@@ -183,6 +216,8 @@ jobs:
       TAG: ${{ needs.build.outputs.tag }}
       IMAGE: SimplrSSH-v${{ needs.build.outputs.version }}-release.bin
       LAUNCHER_IMAGE: SimplrSSH-v${{ needs.build.outputs.version }}-launcher.bin
+      TAB5_IMAGE: SimplrSSH-Tab5-v${{ needs.build.outputs.version }}-release.bin
+      TAB5_LAUNCHER_IMAGE: SimplrSSH-Tab5-v${{ needs.build.outputs.version }}-launcher.bin
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -210,8 +245,11 @@ jobs:
         run: |
           sha256=$(cut -d' ' -f1 "firmware/$IMAGE.sha256")
           launcher_sha256=$(cut -d' ' -f1 "firmware/$LAUNCHER_IMAGE.sha256")
+          tab5_sha256=$(cut -d' ' -f1 "firmware/$TAB5_IMAGE.sha256")
+          tab5_launcher_sha256=$(cut -d' ' -f1 "firmware/$TAB5_LAUNCHER_IMAGE.sha256")
           python3 .github/scripts/release_notes.py "$VERSION" "$IMAGE" "$sha256" \
-            "$LAUNCHER_IMAGE" "$launcher_sha256" release-notes.md
+            "$LAUNCHER_IMAGE" "$launcher_sha256" "$TAB5_IMAGE" "$tab5_sha256" \
+            "$TAB5_LAUNCHER_IMAGE" "$tab5_launcher_sha256" release-notes.md
 
       - name: Publish ${{ needs.build.outputs.tag }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
@@ -229,3 +267,7 @@ jobs:
             firmware/${{ env.IMAGE }}.sha256
             firmware/${{ env.LAUNCHER_IMAGE }}
             firmware/${{ env.LAUNCHER_IMAGE }}.sha256
+            firmware/${{ env.TAB5_IMAGE }}
+            firmware/${{ env.TAB5_IMAGE }}.sha256
+            firmware/${{ env.TAB5_LAUNCHER_IMAGE }}
+            firmware/${{ env.TAB5_LAUNCHER_IMAGE }}.sha256

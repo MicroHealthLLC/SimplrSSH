@@ -3,9 +3,12 @@
 Lockfile check for the Tests workflow's install job. Run after `idf.py reconfigure` on a
 clean checkout in the pinned ESP-IDF image:
 
-  check_dependencies.py <reconfigure.log> <committed-lock> <committed-sdkconfig> <generated-sdkconfig>
+  check_dependencies.py [--board tdeck|tab5] <reconfigure.log> <committed-lock> <committed-sdkconfig>
+                        <generated-sdkconfig>
 
-(reconfigure rewrites dependencies.lock and sdkconfig, so pass copies taken before it ran)
+(reconfigure rewrites the lock and sdkconfig, so pass copies taken before it ran). The T-Deck
+(default) uses dependencies.lock, sdkconfig and sdkconfig.defaults; the Tab5 uses
+dependencies.lock.esp32p4, sdkconfig.tab5 and sdkconfig.defaults + sdkconfig.defaults.esp32p4.
 
 Fails (exit 1) when
   - the component manager did not install exactly the versions in dependencies.lock
@@ -27,10 +30,17 @@ import os
 import re
 import sys
 
-# component: (locked version, version the build actually compiles today)
+# component: (locked version, version the build actually compiles today), per board
 KNOWN_DRIFT = {
     "lvgl/lvgl": ("9.4.0", "9.6.0~1"),
     "espressif/cmake_utilities": ("0.5.3", "1.1.1"),
+}
+KNOWN_DRIFT_TAB5 = {
+    "lvgl/lvgl": ("9.4.0", "9.6.0~1"),
+}
+BOARDS = {
+    "tdeck": (KNOWN_DRIFT, ["sdkconfig.defaults"]),
+    "tab5": (KNOWN_DRIFT_TAB5, ["sdkconfig.defaults", "sdkconfig.defaults.esp32p4"]),
 }
 
 
@@ -110,7 +120,8 @@ def read_sdkconfig(path):
     return values
 
 
-def check(root, log, committed_lock, committed_cfg, generated_cfg):
+def check(root, log, committed_lock, committed_cfg, generated_cfg, board="tdeck"):
+    known_drift, defaults_files = BOARDS[board]
     problems = []
     with open(committed_lock, encoding="utf-8") as f:
         locked = lock_versions(f.read())
@@ -130,7 +141,7 @@ def check(root, log, committed_lock, committed_cfg, generated_cfg):
         lock_v, built_v = locked.get(name), compiled.get(name)
         if lock_v == built_v:
             continue
-        known = KNOWN_DRIFT.get(name)
+        known = known_drift.get(name)
         if known == (lock_v, built_v):
             drift_rows.append((name, lock_v, built_v, "known"))
             warning(f"{name}: the build compiles {built_v}, dependencies.lock pins {lock_v} "
@@ -138,13 +149,15 @@ def check(root, log, committed_lock, committed_cfg, generated_cfg):
         else:
             drift_rows.append((name, lock_v, built_v, "NEW"))
             problems.append(f"{name}: the build compiles {built_v} but dependencies.lock pins {lock_v}")
-    for name in sorted(set(KNOWN_DRIFT) - {r[0] for r in drift_rows}):
+    for name in sorted(set(known_drift) - {r[0] for r in drift_rows}):
         warning(f"{name} no longer drifts: remove it from KNOWN_DRIFT in check_dependencies.py")
 
-    with open(os.path.join(root, "sdkconfig.defaults"), encoding="utf-8") as f:
-        defaults = re.findall(r"(?m)^(CONFIG_\w+)=(.*)$", f.read())
+    defaults = {}   # Later files override earlier ones, as in ESP-IDF
+    for name in defaults_files:
+        with open(os.path.join(root, name), encoding="utf-8") as f:
+            defaults.update(re.findall(r"(?m)^(CONFIG_\w+)=(.*)$", f.read()))
     generated = read_sdkconfig(generated_cfg)
-    for option, value in defaults:
+    for option, value in defaults.items():
         if generated.get(option, "n") != value and option in generated:
             problems.append(f"{option}={generated[option]} in the generated sdkconfig; "
                             f"sdkconfig.defaults says {value} (update sdkconfig too)")
@@ -158,16 +171,20 @@ def check(root, log, committed_lock, committed_cfg, generated_cfg):
 
 
 def main():
-    if len(sys.argv) != 5:
+    args = sys.argv[1:]
+    board = "tdeck"
+    if args[:1] == ["--board"] and len(args) > 1:
+        board, args = args[1], args[2:]
+    if len(args) != 4 or board not in BOARDS:
         print(__doc__)
         return 2
-    with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+    with open(args[0], encoding="utf-8", errors="replace") as f:
         log = f.read()
-    problems, drift, count, stale = check(os.getcwd(), log, sys.argv[2], sys.argv[3], sys.argv[4])
+    problems, drift, count, stale = check(os.getcwd(), log, args[1], args[2], args[3], board)
     for p in problems:
         error(p, "dependencies.lock" if "lock" in p else None)
 
-    lines = ["## Dependencies", "",
+    lines = [f"## Dependencies ({board})", "",
              f"{count} locked components installed with verified hashes: "
              f"{'yes' if not any('installed' in p for p in problems) else '**no**'}.", ""]
     if drift:

@@ -7,7 +7,10 @@ README normally has none); otherwise (e.g. automatic patch releases) the notes p
 GitHub generates from the commits and pull requests since the previous release,
 which the workflow appends below. Adds install instructions and the image checksums.
 
-Usage: release_notes.py <version> <image> <sha256> <launcher-image> <launcher-sha256> <output.md>
+Usage: release_notes.py <version> <image> <sha256> <launcher-image> <launcher-sha256>
+                        [<tab5-image> <tab5-sha256> <tab5-launcher-image> <tab5-launcher-sha256>]
+                        <output.md>
+(the T-Deck's images first, then optionally the M5Stack Tab5's)
 """
 
 import re
@@ -29,14 +32,33 @@ def version_section(readme, version):
     return None, None
 
 
-def main():
-    if len(sys.argv) != 7:
-        print(__doc__)
-        return 2
-    version, image, sha256, launcher_image, launcher_sha256, output = sys.argv[1:]
+def tab5_section(image, sha256, launcher_image, launcher_sha256):
+    return f"""
+## M5Stack Tab5 (with the Tab5 Keyboard)
 
-    with open("README.md", encoding="utf-8") as f:
-        title, changes = version_section(f.read(), version)
+Download **`{image}`** and flash it to the Tab5 at offset **`0x0`** (ESP32-P4, 16 MB). To
+enter download mode, hold the Tab5's reset button for about 2 seconds, until the green LED
+flashes quickly.
+
+- **Browser**: open https://espressif.github.io/esptool-js/, connect the Tab5 over USB-C,
+  add `{image}` at address `0x0`, and click *Program*.
+- **Command line**:
+  ```
+  esptool.py --chip esp32p4 --baud 921600 write_flash 0x0 {image}
+  ```
+
+SHA-256: `{sha256}` (also in `{image}.sha256`)
+
+With a launcher, install **`{launcher_image}`** from the SD card instead.
+SHA-256: `{launcher_sha256}` (also in `{launcher_image}.sha256`)
+
+Tab5 support is new and has not been tested on a Tab5 yet: please report what you find.
+"""
+
+
+def build_notes(readme, version, image, sha256, launcher_image, launcher_sha256, tab5=None):
+    """Release notes text; tab5 = (image, sha256, launcher_image, launcher_sha256) or None."""
+    title, changes = version_section(readme, version)
     if changes:
         whats_new = f"## What's new in {title}\n\n{changes}\n"
     else:
@@ -67,6 +89,22 @@ the same way. Without a launcher, use `{image}` above.
 
 SHA-256: `{launcher_sha256}` (also in `{launcher_image}.sha256`)
 """
+    if tab5:
+        notes += tab5_section(*tab5)
+    return notes
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) not in (6, 10):
+        print(__doc__)
+        return 2
+    version, image, sha256, launcher_image, launcher_sha256 = args[:5]
+    tab5 = tuple(args[5:9]) if len(args) == 10 else None
+    output = args[-1]
+
+    with open("README.md", encoding="utf-8") as f:
+        notes = build_notes(f.read(), version, image, sha256, launcher_image, launcher_sha256, tab5)
     with open(output, "w", encoding="utf-8") as f:
         f.write(notes)
     print(notes)

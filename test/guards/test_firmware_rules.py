@@ -35,7 +35,7 @@ class Build(unittest.TestCase):
         layout = repo.read("AI_RULES.md").split("## Code layout", 1)[1].split("\n## ", 1)[0]
         documented = set(re.findall(r"`main/([\w]+\.cpp)`", layout))
         # Small helpers without their own row: hardware glue and pure functions
-        undocumented_ok = {"battery_measurement.cpp", "c3_keyboard.cpp"}
+        undocumented_ok = {"battery_measurement.cpp", "c3_keyboard.cpp", "battery_tab5.cpp"}
         present = {os.path.basename(f) for f in glob.glob(os.path.join(repo.MAIN, "*.cpp"))}
         self.assertEqual(sorted(present - documented - undocumented_ok), [],
                          "add new source files to the Code layout table in AI_RULES.md")
@@ -151,27 +151,76 @@ class Secrets(unittest.TestCase):
         self.assertGreater(sum(code.count("vault::wipe(") for code in SRC.values()), 3)
 
 
+# Each board's defaults and the sdkconfig they must have reached (later files override earlier)
+BOARD_CONFIGS = {
+    "sdkconfig": ["sdkconfig.defaults"],
+    "sdkconfig.tab5": ["sdkconfig.defaults", "sdkconfig.defaults.esp32p4"],
+}
+
+
 class SdkconfigDefaults(unittest.TestCase):
     def test_every_setting_explained(self):
-        lines = repo.read("sdkconfig.defaults").splitlines()
-        for i, line in enumerate(lines):
-            if not line.startswith("CONFIG_"):
-                continue
-            j = i - 1
-            while j >= 0 and lines[j].startswith("CONFIG_"):
-                j -= 1
-            with self.subTest(option=line):
-                self.assertTrue(j >= 0 and lines[j].startswith("#"), "comment each setting in sdkconfig.defaults")
+        for name in ("sdkconfig.defaults", "sdkconfig.defaults.esp32p4"):
+            lines = repo.read(name).splitlines()
+            for i, line in enumerate(lines):
+                if not line.startswith("CONFIG_"):
+                    continue
+                j = i - 1
+                while j >= 0 and lines[j].startswith("CONFIG_"):
+                    j -= 1
+                with self.subTest(file=name, option=line):
+                    self.assertTrue(j >= 0 and lines[j].startswith("#"), f"comment each setting in {name}")
 
     def test_defaults_applied_to_committed_sdkconfig(self):
-        committed = repo.sdkconfig()
-        for line in repo.read("sdkconfig.defaults").splitlines():
-            m = re.match(r"^(CONFIG_\w+)=(.*)$", line)
-            if not m or m.group(1) not in committed:
+        for config, defaults_files in BOARD_CONFIGS.items():
+            committed = repo.sdkconfig(config)
+            wanted = {}
+            for name in defaults_files:
+                wanted.update(re.findall(r"(?m)^(CONFIG_\w+)=(.*)$", repo.read(name)))
+            for option, value in wanted.items():
+                if option not in committed:
+                    continue
+                with self.subTest(sdkconfig=config, option=option):
+                    self.assertEqual(committed[option], value, f"{config} overrides its defaults: update both")
+
+    def test_tab5_sdkconfig_is_for_the_tab5(self):
+        cfg = repo.sdkconfig("sdkconfig.tab5")
+        self.assertEqual(cfg.get("CONFIG_IDF_TARGET"), '"esp32p4"')
+        self.assertEqual(repo.sdkconfig().get("CONFIG_IDF_TARGET"), '"esp32s3"')
+
+
+class Boards(unittest.TestCase):
+    """One source tree: shared code stays board-independent, board code sits behind board.hpp."""
+    BOARD_FILES = {
+        "esp32s3": {"board_tdeck.cpp", "c3_keyboard.cpp", "battery_measurement.cpp", "audio_tdeck.cpp"},
+        "esp32p4": {"board_tab5.cpp", "tab5_keyboard.cpp", "tab5_keymap.cpp", "battery_tab5.cpp",
+                    "audio_tab5.cpp"},
+    }
+
+    def test_board_sources_listed_per_target(self):
+        cmake = repo.read("main", "CMakeLists.txt")
+        tab5, tdeck = cmake.split('if(IDF_TARGET STREQUAL "esp32p4")', 1)[1].split("else()", 1)
+        tdeck = tdeck.split("endif()", 1)[0]
+        self.assertEqual(set(re.findall(r'"(\w+\.cpp)"', tab5)), self.BOARD_FILES["esp32p4"])
+        self.assertEqual(set(re.findall(r'"(\w+\.cpp)"', tdeck)), self.BOARD_FILES["esp32s3"])
+
+    def test_shared_code_has_no_board_pins(self):
+        board_files = set().union(*self.BOARD_FILES.values()) | {"sd_card.cpp"}   # sd_card: per-board #if
+        for name, code in SRC.items():
+            if os.path.basename(name) in board_files or not name.endswith(".cpp"):
                 continue
-            with self.subTest(option=m.group(1)):
-                self.assertEqual(committed[m.group(1)], m.group(2),
-                                 "sdkconfig overrides sdkconfig.defaults: update both")
+            with self.subTest(file=name):
+                self.assertNotRegex(code, r'#include\s*"utilities\.h"|lv_font_montserrat_\d+|BOARD_\w+',
+                                    "board pins and fonts belong in the board files (board::ui())")
+
+    def test_both_boards_implement_the_board_interface(self):
+        header = repo.read("main", "include", "board.hpp")
+        functions = set(re.findall(r"^\s+(?:[\w:*&]+\s+)+?(\w+)\(", header, re.M)) - {"post_input"}
+        for board in ("board_tdeck.cpp", "board_tab5.cpp"):
+            code = SRC[f"main/{board}"]
+            for fn in functions:
+                with self.subTest(board=board, function=fn):
+                    self.assertRegex(code, rf"board::{fn}\(")
 
 
 if __name__ == "__main__":

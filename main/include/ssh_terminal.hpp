@@ -46,6 +46,7 @@ public:
     void move_cursor_right();
     void move_cursor_home();
     void move_cursor_end();
+    void delete_at_cursor();   // Forward delete (a full keyboard's Del key)
     
     esp_err_t init_wifi(const char* ssid, const char* password);
     void disconnect_wifi();
@@ -228,6 +229,7 @@ private:
     void save_history_to_nvs();
     std::string strip_ansi_codes(const char* data, size_t len);
     void send_special_key(const char* sequence);
+    void write_channel(const char* data, size_t len);
     void create_side_panel();
     void toggle_side_panel();
     static void gesture_event_cb(lv_event_t* e);

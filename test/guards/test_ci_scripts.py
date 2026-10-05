@@ -94,6 +94,17 @@ class ReleaseNotes(unittest.TestCase):
     def test_no_section(self):
         self.assertEqual(release_notes.version_section("# X\n", "9.9.9"), (None, None))
 
+    def test_notes_cover_both_boards(self):
+        notes = release_notes.build_notes("# X\n", "1.5.0", "SimplrSSH-v1.5.0-release.bin", "a" * 64,
+                                          "SimplrSSH-v1.5.0-launcher.bin", "b" * 64,
+                                          ("SimplrSSH-Tab5-v1.5.0-release.bin", "c" * 64,
+                                           "SimplrSSH-Tab5-v1.5.0-launcher.bin", "d" * 64))
+        for text in ("SimplrSSH-v1.5.0-release.bin", "--chip esp32s3", "SimplrSSH-Tab5-v1.5.0-release.bin",
+                     "--chip esp32p4", "SimplrSSH-Tab5-v1.5.0-launcher.bin", "c" * 64, "d" * 64):
+            self.assertIn(text, notes)
+        t_deck_only = release_notes.build_notes("# X\n", "1.5.0", "i", "s", "l", "ls")
+        self.assertNotIn("Tab5", t_deck_only)
+
     def test_version_is_not_a_regex(self):
         self.assertEqual(release_notes.version_section("### v1x4x2\n- no\n", "1.4.2"), (None, None))
 
@@ -144,7 +155,7 @@ class FirmwareChecks(unittest.TestCase):
 
     def test_surface_negative_controls(self):
         good = {"esp_crt_bundle_attach", "libssh2_session_hostkey", "libssh2_hostkey_hash",
-                "esp_netif_create_default_wifi_sta", "lwip_connect"}
+                "esp_netif_create_default_wifi_sta", "esp_wifi_set_storage", "lwip_connect"}
         cfg = dict(check_firmware.REQUIRED_CONFIG)
         self.assertEqual(check_firmware.surface_problems(good, cfg), [])
         for bad in ("lwip_listen", "httpd_start", "esp_https_ota_begin", "esp_bt_controller_init",
@@ -156,6 +167,22 @@ class FirmwareChecks(unittest.TestCase):
         self.assertTrue(check_firmware.surface_problems(good, dict(cfg, CONFIG_LWIP_IPV6="y")))
         missing_bundle = {k: v for k, v in cfg.items() if k != "CONFIG_MBEDTLS_CERTIFICATE_BUNDLE"}
         self.assertTrue(check_firmware.surface_problems(good, missing_bundle))
+        self.assertTrue(check_firmware.surface_problems(good | {"esp_hosted_slave_ota_begin"}, cfg))
+        self.assertTrue(check_firmware.surface_problems(good - {"esp_wifi_set_storage"}, cfg))
+
+    def test_surface_tab5_wifi_coprocessor_options(self):
+        good = {"esp_crt_bundle_attach", "libssh2_session_hostkey", "libssh2_hostkey_hash",
+                "esp_netif_create_default_wifi_sta", "esp_wifi_set_storage"}
+        cfg = dict(check_firmware.REQUIRED_CONFIG, **check_firmware.REQUIRED_CONFIG_TAB5,
+                   CONFIG_IDF_TARGET_ESP32P4="y")
+        self.assertEqual(check_firmware.surface_problems(good, cfg), [])
+        for option, bad in (("CONFIG_WIFI_RMT_SOFTAP_SUPPORT", "y"), ("CONFIG_WIFI_RMT_NVS_ENABLED", "y"),
+                            ("CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE", "y"),
+                            ("CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED", "n")):
+            with self.subTest(option=option):
+                self.assertTrue(check_firmware.surface_problems(good, dict(cfg, **{option: bad})))
+        # The T-Deck's sdkconfig doesn't need the Tab5's options
+        self.assertEqual(check_firmware.surface_problems(good, dict(check_firmware.REQUIRED_CONFIG)), [])
 
     def test_warnings_gate(self):
         log = ("/project/main/ssh_terminal.cpp:368:22: warning: 'void lv_obj_remove_flag(lv_obj_t*, "
@@ -174,6 +201,11 @@ class FirmwareChecks(unittest.TestCase):
             with redirect_stdout(io.StringIO()):
                 self.assertEqual(check_firmware.cmd_size([f.name]), 1)
                 self.assertEqual(check_firmware.cmd_size([f.name, "--budget", str(10 ** 9)]), 0)
+                self.assertEqual(check_firmware.cmd_size([f.name, "--board", "tab5"]), 0)
+            with open(f.name, "w") as g:
+                json.dump({"used_diram": check_firmware.TAB5_INTERNAL_RAM_BUDGET + 1}, g)
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(check_firmware.cmd_size([f.name, "--board", "tab5"]), 1)
         finally:
             os.unlink(f.name)
 
@@ -240,20 +272,23 @@ class Dependencies(unittest.TestCase):
             with self.subTest(component=name):
                 self.assertEqual(locked.get(name), lock_v, "KNOWN_DRIFT must match dependencies.lock")
 
-    def run_check(self, compiled, lock_text, defaults="CONFIG_A=y\n", generated="CONFIG_A=y\n"):
+    def run_check(self, compiled, lock_text, defaults="CONFIG_A=y\n", generated="CONFIG_A=y\n", board="tdeck",
+                  board_defaults=""):
         with tempfile.TemporaryDirectory() as root:
             for name, version in compiled.items():
                 folder = os.path.join(root, "managed_components", name.replace("/", "__"))
                 os.makedirs(folder)
                 with open(os.path.join(folder, "idf_component.yml"), "w") as f:
                     f.write(f"version: '{version}'\n")
-            files = {"lock": lock_text, "sdkconfig.defaults": defaults, "gen": generated, "committed": generated}
+            files = {"lock": lock_text, "sdkconfig.defaults": defaults, "gen": generated, "committed": generated,
+                     "sdkconfig.defaults.esp32p4": board_defaults}
             for name, text in files.items():
                 with open(os.path.join(root, name), "w") as f:
                     f.write(text)
             with redirect_stdout(io.StringIO()):
                 return check_dependencies.check(root, RECONFIGURE_LOG, os.path.join(root, "lock"),
-                                                os.path.join(root, "committed"), os.path.join(root, "gen"))[0]
+                                                os.path.join(root, "committed"), os.path.join(root, "gen"),
+                                                board)[0]
 
     LOCK = ("dependencies:\n  espressif/button:\n    version: 4.2.1\n  lvgl/lvgl:\n    version: 9.4.0\n"
             "  idf:\n    version: 5.5.1\ndirect_dependencies:\n- lvgl/lvgl\n")
@@ -270,6 +305,14 @@ class Dependencies(unittest.TestCase):
         lock = self.LOCK.replace("version: 4.2.1", "version: 4.3.0")
         problems = self.run_check({"espressif/button": "4.3.0", "lvgl/lvgl": "9.4.0"}, lock)
         self.assertTrue(any("installed 4.2.1" in p for p in problems))
+
+    def test_tab5_defaults_override_shared_ones(self):
+        compiled = {"espressif/button": "4.2.1", "lvgl/lvgl": "9.6.0~1"}   # Known drift on the Tab5 too
+        self.assertEqual(self.run_check(compiled, self.LOCK, defaults="CONFIG_A=n\n", generated="CONFIG_A=y\n",
+                                        board="tab5", board_defaults="CONFIG_A=y\n"), [])
+        problems = self.run_check(compiled, self.LOCK, defaults="CONFIG_A=y\n", generated="CONFIG_A=y\n",
+                                  board="tab5", board_defaults="CONFIG_A=n\n")
+        self.assertTrue(any("CONFIG_A" in p for p in problems))
 
     def test_sdkconfig_default_must_take_effect(self):
         problems = self.run_check({"espressif/button": "4.2.1", "lvgl/lvgl": "9.4.0"}, self.LOCK,
