@@ -2,9 +2,10 @@
 """
 Checks on the built firmware, used by the Tests workflow (build and network-surface jobs).
 
-  check_firmware.py size <size.json> [--budget BYTES]
+  check_firmware.py size <size.json> [--board tdeck|tab5] [--budget BYTES]
       Static internal RAM (DIRAM: .data + .bss + IRAM code placed in DIRAM), from
-      `python -m esp_idf_size --format json`, must stay within the budget (AI_RULES.md, Memory).
+      `python -m esp_idf_size --format json`, must stay within the board's budget
+      (AI_RULES.md, Memory).
 
   check_firmware.py warnings <build-log>
       No compiler warnings in main/, except KNOWN_WARNINGS (reported, not failed).
@@ -16,6 +17,7 @@ Checks on the built firmware, used by the Tests workflow (build and network-surf
       The linked firmware has no listening sockets, servers, OTA, Bluetooth, mDNS or access
       point, and does have TLS certificate-bundle verification and SSH host key checks; the
       generated sdkconfig keeps the attack surface closed (AI_RULES.md, Scope and Security).
+      The board comes from the sdkconfig (the Tab5's WiFi options have their own names).
 
 Each prints GitHub annotations for problems and exits 1 if there are any.
 """
@@ -28,6 +30,10 @@ import sys
 # Static internal RAM ceiling. AI_RULES.md: "~115 KB of internal RAM is used statically; keep
 # it there or lower". The small headroom absorbs toolchain noise; raise it only deliberately.
 INTERNAL_RAM_BUDGET = 118 * 1024
+# The Tab5 (ESP32-P4) has 576 KB of internal RAM, but the same discipline applies: about 118 KB
+# is used statically today (the display, WiFi co-processor link and USB-free BSP included).
+TAB5_INTERNAL_RAM_BUDGET = 122 * 1024
+BUDGETS = {"tdeck": INTERNAL_RAM_BUDGET, "tab5": TAB5_INTERNAL_RAM_BUDGET}
 
 WARNING_RE = re.compile(r"(?:^|/)(main/[^:\s]+):(\d+):\d+: warning: (.*?)(?: \[(-W[^\]]+)\])?$")
 
@@ -52,6 +58,7 @@ FORBIDDEN_SYMBOLS = [
     (r"lwip_listen|lwip_accept|lwip_bind", "listening socket"),
     (r"httpd_\w+|esp_https_server\w*", "HTTP server"),
     (r"esp_https_ota\w*|esp_ota_begin|esp_ota_write", "OTA update"),
+    (r"esp_hosted_slave_ota\w*|esp_hosted_\w*_ota_\w*", "WiFi co-processor OTA update"),
     (r"esp_bt_\w+|esp_ble_\w+|ble_hs_\w+|btc_\w+", "Bluetooth"),
     (r"mdns_\w+", "mDNS"),
     (r"dhcps_start|esp_netif_create_default_wifi_ap|esp_wifi_ap_get_sta_list", "WiFi access point"),
@@ -62,6 +69,7 @@ REQUIRED_SYMBOLS = [
     ("libssh2_session_hostkey", "SSH host key check"),
     ("libssh2_hostkey_hash", "SSH host key fingerprint"),
     ("esp_netif_create_default_wifi_sta", "WiFi station mode"),
+    ("esp_wifi_set_storage", "WiFi password kept out of the WiFi driver's flash"),
 ]
 
 # Options that must hold in the generated sdkconfig (unset counts as "n")
@@ -106,9 +114,26 @@ def read_sdkconfig(path):
     return values
 
 
+# Tab5 (ESP32-P4): WiFi runs on the ESP32-C6 through esp_hosted / esp_wifi_remote, whose
+# options replace the ESP_WIFI_* ones above (those are absent there, so they'd pass by default)
+REQUIRED_CONFIG_TAB5 = {
+    "CONFIG_WIFI_RMT_SOFTAP_SUPPORT": "n",
+    "CONFIG_WIFI_RMT_NVS_ENABLED": "n",
+    "CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE": "n",
+    "CONFIG_ESP_HOSTED_ENABLE_BT_BLUEDROID": "n",
+    "CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED": "y",
+}
+
+
+def required_config(values):
+    if values.get("CONFIG_IDF_TARGET_ESP32P4") == "y":
+        return {**REQUIRED_CONFIG, **REQUIRED_CONFIG_TAB5}
+    return REQUIRED_CONFIG
+
+
 def sdkconfig_problems(values):
     return [f"{option}={values.get(option, 'n')} (must be {wanted})"
-            for option, wanted in REQUIRED_CONFIG.items() if values.get(option, "n") != wanted]
+            for option, wanted in required_config(values).items() if values.get(option, "n") != wanted]
 
 
 def defined_symbols(nm_output):
@@ -165,13 +190,14 @@ def cmd_warnings(args):
 
 
 def cmd_size(args):
-    budget = INTERNAL_RAM_BUDGET
+    board = args[args.index("--board") + 1] if "--board" in args else "tdeck"
+    budget = BUDGETS[board]
     if "--budget" in args:
         budget = int(args[args.index("--budget") + 1])
     with open(args[0]) as f:
         size = json.load(f)
     used = size["used_diram"]
-    lines = ["## Firmware size", "",
+    lines = [f"## Firmware size ({board})", "",
              "| Region | Used | Limit |", "|---|---|---|",
              f"| Internal RAM, static (DIRAM) | {used:,} bytes | {budget:,} bytes |",
              f"| IRAM | {size.get('used_iram', 0):,} bytes | {size.get('iram_total', 0):,} bytes |",
@@ -179,7 +205,7 @@ def cmd_size(args):
     summary("\n".join(lines))
     if used > budget:
         error(f"Static internal RAM {used} bytes exceeds the {budget}-byte budget (AI_RULES.md, Memory): "
-              "move buffers to PSRAM or explain the increase and raise INTERNAL_RAM_BUDGET")
+              "move buffers to PSRAM or explain the increase and raise the board's budget")
         return 1
     return 0
 

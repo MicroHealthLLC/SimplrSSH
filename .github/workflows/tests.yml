@@ -15,9 +15,10 @@
 #                                            │          └─► network-surface
 #                                            └─► persistence
 #
-#   install          clean resolve in the pinned ESP-IDF image: the locked components
-#                    install with verified hashes, the build compiles nothing unexpected,
-#                    and every sdkconfig.defaults setting takes effect.
+#   install          clean resolve in the pinned ESP-IDF image, for each board (T-Deck,
+#                    Tab5): the locked components install with verified hashes, the build
+#                    compiles nothing unexpected, and every sdkconfig.defaults setting takes
+#                    effect.
 #   lint             actionlint (workflows), ruff (Python), cppcheck (C++, warnings block).
 #   typecheck        host compile of the firmware's hardware-independent sources and the
 #                    tests with -Wall -Wextra -Werror; Python byte-compile.
@@ -29,18 +30,20 @@
 #                    written by older firmware (the database gate's equivalent). ESP-IDF's
 #                    gen_esp32part validates both tables in the build job (idf.py build,
 #                    idf.py launcher-bin).
-#   build            the firmware, release and launcher images; static internal RAM budget;
+#   build            both boards' firmware, release and launcher images; static internal RAM
+#                    budget per board;
 #                    no compiler warnings in main/ (except listed known ones); no key
 #                    material in the images (with a
 #                    negative control); SBOM for the audit.
 #   audit            high/critical CVEs (NVD, via esp-idf-sbom) in ESP-IDF, its libraries and
-#                    the components, except reviewed ones in .github/audit-baseline.txt.
-#   network-surface  the linked firmware has no listening sockets, servers, OTA, Bluetooth or
-#                    access point, and links TLS verification and SSH host key checks.
+#                    the components of both images, except reviewed ones in
+#                    .github/audit-baseline.txt.
+#   network-surface  both linked firmwares have no listening sockets, servers, OTA, Bluetooth
+#                    or access point, and link TLS verification and SSH host key checks.
 #   secret-scan      gitleaks over the commits this push / pull request introduces.
 #
 # Actions are pinned by commit and images by digest (test/guards/test_supply_chain.py).
-# Hardware behaviour is not tested here: it can only be confirmed on a real T-Deck.
+# Hardware behaviour is not tested here: it can only be confirmed on a real T-Deck or Tab5.
 ##
 
 name: Tests
@@ -91,16 +94,29 @@ jobs:
             sleep $((attempt * 15))
           done
           exit 1
-      - name: Resolve components (idf.py reconfigure)
+      - name: Resolve components (idf.py reconfigure), T-Deck
         run: |
           cp dependencies.lock "$RUNNER_TEMP/dependencies.lock"
           cp sdkconfig "$RUNNER_TEMP/sdkconfig"
           docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/project" -w /project "$IDF_IMAGE" \
             bash -c 'idf.py reconfigure > reconfigure.log 2>&1' || { tail -50 reconfigure.log; exit 1; }
-      - name: Check against dependencies.lock and sdkconfig.defaults
+      - name: Check against dependencies.lock and sdkconfig.defaults, T-Deck
         run: |
           python3 .github/scripts/check_dependencies.py reconfigure.log \
             "$RUNNER_TEMP/dependencies.lock" "$RUNNER_TEMP/sdkconfig" sdkconfig
+      # The boards' components differ: start the Tab5 from an empty managed_components/
+      - name: Resolve components (idf.py reconfigure), Tab5
+        run: |
+          rm -rf managed_components
+          cp dependencies.lock.esp32p4 "$RUNNER_TEMP/dependencies.lock.esp32p4"
+          cp sdkconfig.tab5 "$RUNNER_TEMP/sdkconfig.tab5"
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/project" -w /project "$IDF_IMAGE" \
+            bash -c 'idf.py -B build-tab5 -D IDF_TARGET=esp32p4 -D SDKCONFIG=sdkconfig.tab5 reconfigure \
+              > reconfigure-tab5.log 2>&1' || { tail -50 reconfigure-tab5.log; exit 1; }
+      - name: Check against dependencies.lock.esp32p4 and the Tab5 defaults
+        run: |
+          python3 .github/scripts/check_dependencies.py --board tab5 reconfigure-tab5.log \
+            "$RUNNER_TEMP/dependencies.lock.esp32p4" "$RUNNER_TEMP/sdkconfig.tab5" sdkconfig.tab5
 
   # b) lint: workflows (actionlint, pinned binary checked against its SHA-256), Python
   #    (ruff, pinned by hash) and C++ (cppcheck; any warning or error fails).
@@ -211,29 +227,43 @@ jobs:
           done
           exit 1
       # Root in the container (pip installs into the IDF Python environment); the files
-      # are handed back to the runner user at the end.
-      - name: Build firmware, images, size report, symbols and SBOM
+      # are handed back to the runner user at the end. The T-Deck first, then the Tab5 from an
+      # empty managed_components/ (the boards' components differ) into build-tab5/.
+      - name: Build firmware, images, size report, symbols and SBOM (both boards)
         run: |
           docker run --rm -v "$PWD:/project" -w /project -e "OWNER=$(id -u):$(id -g)" \
             -e "SBOM_VERSION=$ESP_IDF_SBOM_VERSION" "$IDF_IMAGE" bash -c '
               set -eo pipefail
               trap "chown -R \"\$OWNER\" /project" EXIT
               git config --global --add safe.directory "*"
+              pip install --quiet "esp-idf-sbom==$SBOM_VERSION"
               idf.py build 2>&1 | tee build-output.log
               idf.py merge-bin -o SimplrSSH-ci-release.bin
               idf.py launcher-bin
               python -m esp_idf_size --format json -o build/size.json build/SimplrSSH.map
               xtensa-esp32s3-elf-nm --defined-only build/SimplrSSH.elf > build/symbols.txt
-              pip install --quiet "esp-idf-sbom==$SBOM_VERSION"
-              esp-idf-sbom create build/project_description.json -o build/sbom.spdx'
+              esp-idf-sbom create build/project_description.json -o build/sbom.spdx
+              rm -rf managed_components
+              TAB5="-B build-tab5 -D IDF_TARGET=esp32p4 -D SDKCONFIG=sdkconfig.tab5"
+              idf.py $TAB5 build 2>&1 | tee build-output-tab5.log
+              idf.py $TAB5 merge-bin -o SimplrSSH-Tab5-ci-release.bin
+              idf.py $TAB5 launcher-bin
+              python -m esp_idf_size --format json -o build-tab5/size.json build-tab5/SimplrSSH.map
+              riscv32-esp-elf-nm --defined-only build-tab5/SimplrSSH.elf > build-tab5/symbols.txt
+              esp-idf-sbom create build-tab5/project_description.json -o build-tab5/sbom.spdx'
       - name: Static internal RAM budget
-        run: python3 .github/scripts/check_firmware.py size build/size.json
+        run: |
+          python3 .github/scripts/check_firmware.py size build/size.json
+          python3 .github/scripts/check_firmware.py size build-tab5/size.json --board tab5
       - name: No compiler warnings in main/
-        run: python3 .github/scripts/check_firmware.py warnings build-output.log
+        run: |
+          python3 .github/scripts/check_firmware.py warnings build-output.log
+          python3 .github/scripts/check_firmware.py warnings build-output-tab5.log
       - name: No key material in the images
         run: |
           images=$(ls build/SimplrSSH.bin build/bootloader/bootloader.bin build/SimplrSSH-ci-release.bin \
-                      build/SimplrSSH-v*-launcher.bin)
+                      build/SimplrSSH-v*-launcher.bin build-tab5/SimplrSSH.bin build-tab5/bootloader/bootloader.bin \
+                      build-tab5/SimplrSSH-Tab5-ci-release.bin build-tab5/SimplrSSH-Tab5-v*-launcher.bin)
           # shellcheck disable=SC2086
           python3 .github/scripts/check_firmware.py secrets $images
           # Negative control: the same scan must catch a real key appended to the image
@@ -253,6 +283,10 @@ jobs:
             build/symbols.txt
             build/size.json
             sdkconfig
+            build-tab5/sbom.spdx
+            build-tab5/symbols.txt
+            build-tab5/size.json
+            sdkconfig.tab5
           if-no-files-found: error
           retention-days: 14
 
@@ -274,19 +308,23 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/venv"
           "$RUNNER_TEMP/venv/bin/pip" install --quiet "esp-idf-sbom==$ESP_IDF_SBOM_VERSION"
-          for attempt in 1 2 3; do
-            # Exits 1 when it finds vulnerabilities; check_audit.py judges the report
-            "$RUNNER_TEMP/venv/bin/esp-idf-sbom" --no-progress check --format json -o vulns.json \
-              tests-build/build/sbom.spdx || true
-            [ -s vulns.json ] && grep -q '"records"' vulns.json && exit 0
-            echo "No report (attempt $attempt), retrying..."
-            sleep $((attempt * 30))
+          for board in build build-tab5; do
+            for attempt in 1 2 3; do
+              # Exits 1 when it finds vulnerabilities; check_audit.py judges the report
+              "$RUNNER_TEMP/venv/bin/esp-idf-sbom" --no-progress check --format json -o "vulns-$board.json" \
+                "tests-build/$board/sbom.spdx" || true
+              [ -s "vulns-$board.json" ] && grep -q '"records"' "vulns-$board.json" && continue 2
+              echo "No report for $board (attempt $attempt), retrying..."
+              sleep $((attempt * 30))
+            done
+            exit 1
           done
-          exit 1
       - name: High / critical CVEs
-        run: python3 .github/scripts/check_audit.py vulns.json
+        run: |
+          python3 .github/scripts/check_audit.py vulns-build.json
+          python3 .github/scripts/check_audit.py vulns-build-tab5.json
 
-  # h) network-surface: the linked firmware and its generated sdkconfig keep the attack
+  # h) network-surface: both linked firmwares and their generated sdkconfigs keep the attack
   #    surface closed (station-only WiFi, no listening sockets, servers, OTA, Bluetooth).
   network-surface:
     name: network-surface
@@ -303,7 +341,10 @@ jobs:
         working-directory: test/guards
         run: python3 -m unittest -v test_network_surface
       - name: Linked symbols and generated sdkconfig
-        run: python3 .github/scripts/check_firmware.py surface tests-build/build/symbols.txt tests-build/sdkconfig
+        run: |
+          python3 .github/scripts/check_firmware.py surface tests-build/build/symbols.txt tests-build/sdkconfig
+          python3 .github/scripts/check_firmware.py surface tests-build/build-tab5/symbols.txt \
+            tests-build/sdkconfig.tab5
 
   # i) secret-scan: gitleaks over the commits this push / pull request introduces (not the
   #    whole history). Image pinned by tag and digest.

@@ -1,7 +1,8 @@
 /*
  * Deck Base Application
- * Main application entry point for SimplrSSH. Initializes hardware peripherals including
- * GPIO, display, touch input, and manages FreeRTOS tasks for keyboard input and trackball navigation.
+ * Main application entry point for SimplrSSH, shared by every board (board.hpp): starts the
+ * hardware through the board layer, shows the terminal and runs keypad_task, the one task
+ * that handles keyboard and trackball/touch input and all terminal work.
  */
 
 #include <stdio.h>
@@ -12,48 +13,53 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_err.h"
-#include "esp_check.h"
 #include "bsp/esp-bsp.h"
-#include "bsp/display.h"
-#include "bsp/touch.h"
 
-#include "esp_lcd_touch_gt911.h"
-#include "driver/gpio.h"
-
-#include "utilities.h"
-#include "c3_keyboard.hpp"
+#include "board.hpp"
 #include "ssh_terminal.hpp"
 #include "sd_card.hpp"
 #include "settings_nvs.hpp"
 
 #include "lvgl.h"
 
-#if defined(BSP_LCD_DRAW_BUFF_SIZE)
-#define DRAW_BUF_SIZE BSP_LCD_DRAW_BUFF_SIZE
-#else
-#define DRAW_BUF_SIZE (BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT)
-#endif
-
-static const char *TAG = "main";
-
-// GT911 touch controller I2C clock (was CONFIG_BSP_I2C_CLK_SPEED_HZ, which the BSP no longer provides)
-#define TOUCH_I2C_CLK_SPEED_HZ 100000
-
-static i2c_master_bus_handle_t i2c_handle;
 static lv_obj_t *ssh_screen;
 static SSHTerminal *ssh_terminal = NULL;
 
-// Trackball events, handled by keypad_task so only one task runs the terminal
+// Input events (board::InputEvent), handled by keypad_task so only one task runs the terminal
 // (menus, WiFi scans, crypto and SSH connects need a large stack)
-enum InputEvent : uint8_t { INPUT_UP, INPUT_DOWN, INPUT_LEFT, INPUT_RIGHT, INPUT_ENTER,
-                            INPUT_HOLD_START, INPUT_HOLD_END, INPUT_HOLD_END_LONG };
 static QueueHandle_t input_events = NULL;
 
-void keypad_task(void *param)
+void board::post_input(InputEvent event)
 {
-    C3Keyboard keyboard(i2c_handle);
+    uint8_t value = event;
+    if (input_events) {
+        xQueueSend(input_events, &value, 0);
+    }
+}
+
+static void handle_input_event(uint8_t event)
+{
+    switch (event) {
+        case board::INPUT_UP:     ssh_terminal->scroll_screen(1); break;      // Scroll back (older text)
+        case board::INPUT_DOWN:   ssh_terminal->scroll_screen(-1); break;     // Scroll toward the newest text
+        case board::INPUT_LEFT:   ssh_terminal->navigate_history(1); break;   // Older command / previous choice
+        case board::INPUT_RIGHT:  ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
+        case board::INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
+        case board::INPUT_HOLD_START:    ssh_terminal->on_trackball_hold(true, false); break;   // Push-to-talk in chat
+        case board::INPUT_HOLD_END:      ssh_terminal->on_trackball_hold(false, false); break;
+        case board::INPUT_HOLD_END_LONG: ssh_terminal->on_trackball_hold(false, true); break;   // Else: delete history entry
+        case board::INPUT_CURSOR_LEFT:   ssh_terminal->move_cursor_left(); break;
+        case board::INPUT_CURSOR_RIGHT:  ssh_terminal->move_cursor_right(); break;
+        case board::INPUT_CURSOR_HOME:   ssh_terminal->move_cursor_home(); break;
+        case board::INPUT_CURSOR_END:    ssh_terminal->move_cursor_end(); break;
+        case board::INPUT_DELETE:        ssh_terminal->delete_at_cursor(); break;
+    }
+}
+
+static void keypad_task(void *param)
+{
     // Keep running without the keyboard: this task also runs WiFi auto-connect and trackball input
-    bool keyboard_ok = keyboard.init() == ESP_OK;
+    bool keyboard_ok = board::keyboard_init() == ESP_OK;
     if (!keyboard_ok) {
         ESP_LOGE("KEYPAD", "Failed to initialize keypad!");
     }
@@ -69,10 +75,21 @@ void keypad_task(void *param)
             bsp_display_unlock();
         }
 
-        // Non-blocking display lock: keep rendering responsive, drop input if the display is busy
-        uint32_t key = keyboard_ok ? keyboard.get_key() : 0;
-        if (key && bsp_display_lock(0)) {
-            ssh_terminal->handle_key_input((char)key);
+        // Non-blocking display lock: keep rendering responsive, drop input if the display is busy.
+        // A few keys per pass, so fast typing on a keyboard with a key queue keeps up.
+        for (int i = 0; keyboard_ok && i < 8; i++) {
+            uint32_t key = board::read_key();
+            if (!key) {
+                break;
+            }
+            if (!bsp_display_lock(0)) {
+                continue;
+            }
+            if (key & board::KEY_EVENT) {
+                handle_input_event((uint8_t)key);
+            } else {
+                ssh_terminal->handle_key_input((char)key);
+            }
             bsp_display_unlock();
         }
 
@@ -81,16 +98,7 @@ void keypad_task(void *param)
             if (!bsp_display_lock(0)) {
                 continue;
             }
-            switch (event) {
-                case INPUT_UP:     ssh_terminal->scroll_screen(1); break;      // Scroll back (older text)
-                case INPUT_DOWN:   ssh_terminal->scroll_screen(-1); break;     // Scroll toward the newest text
-                case INPUT_LEFT:   ssh_terminal->navigate_history(1); break;   // Older command / previous choice
-                case INPUT_RIGHT:  ssh_terminal->navigate_history(-1); break;  // Newer command / next choice
-                case INPUT_ENTER:  ssh_terminal->handle_key_input('\n'); break;
-                case INPUT_HOLD_START:    ssh_terminal->on_trackball_hold(true, false); break;   // Push-to-talk in chat
-                case INPUT_HOLD_END:      ssh_terminal->on_trackball_hold(false, false); break;
-                case INPUT_HOLD_END_LONG: ssh_terminal->on_trackball_hold(false, true); break;   // Else: delete history entry
-            }
+            handle_input_event(event);
             bsp_display_unlock();
         }
 
@@ -104,158 +112,13 @@ void keypad_task(void *param)
     }
 }
 
-// Polls the trackball and queues events; the work happens in keypad_task.
-// Up/down: scroll. Left/right: history / menu choices.
-// Press: Enter. Hold (> 0.4 s): HOLD_START, then HOLD_END(_LONG) on release.
-void trackball_task(void *param)
-{
-    bool last_up = true;
-    bool last_down = true;
-    bool last_left = true;
-    bool last_right = true;
-    bool last_press = true;
-    bool holding = false;
-    TickType_t press_start = 0;
-    const TickType_t HOLD = pdMS_TO_TICKS(400);
-    const TickType_t LONG_HOLD = pdMS_TO_TICKS(1000);
-
-    while (1) {
-        bool up = gpio_get_level(BOARD_TBOX_G01);
-        bool down = gpio_get_level(BOARD_TBOX_G03);
-        bool left = gpio_get_level(BOARD_TBOX_G04);
-        bool right = gpio_get_level(BOARD_TBOX_G02);
-        bool press = gpio_get_level(BOARD_BOOT_PIN);
-        TickType_t now = xTaskGetTickCount();
-        uint8_t event;
-
-        if (!up && last_up) {
-            event = INPUT_UP;
-            xQueueSend(input_events, &event, 0);
-        }
-        if (!down && last_down) {
-            event = INPUT_DOWN;
-            xQueueSend(input_events, &event, 0);
-        }
-        if (!left && last_left) {
-            event = INPUT_LEFT;
-            xQueueSend(input_events, &event, 0);
-        }
-        if (!right && last_right) {
-            event = INPUT_RIGHT;
-            xQueueSend(input_events, &event, 0);
-        }
-        if (!press && last_press) {
-            press_start = now;
-        } else if (!press && !holding && now - press_start >= HOLD) {
-            holding = true;
-            event = INPUT_HOLD_START;
-            xQueueSend(input_events, &event, 0);
-        } else if (press && !last_press) {
-            event = !holding ? INPUT_ENTER : (now - press_start >= LONG_HOLD ? INPUT_HOLD_END_LONG : INPUT_HOLD_END);
-            holding = false;
-            xQueueSend(input_events, &event, 0);
-        }
-
-        last_up = up;
-        last_down = down;
-        last_left = left;
-        last_right = right;
-        last_press = press;
-        vTaskDelay(pdMS_TO_TICKS(30));
-    }
-}
-
-esp_err_t _bsp_touch_new(const bsp_touch_config_t *config, esp_lcd_touch_handle_t *ret_touch)
-{
-    /* Initilize I2C */
-    esp_err_t ret = bsp_i2c_init();
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Initialize I2C Fail");
-        return ret;
-    }
-
-    /* Initialize touch */
-    const esp_lcd_touch_config_t tp_cfg = {
-        .x_max = BSP_LCD_V_RES,
-        .y_max = BSP_LCD_H_RES,
-        .rst_gpio_num = GPIO_NUM_NC,
-        .int_gpio_num = GPIO_NUM_16,
-        .levels = {
-            .reset = 0,
-            .interrupt = 0,
-        },
-        .flags = {
-            .swap_xy = true,
-            .mirror_x = true,
-            .mirror_y = false,
-        },
-        .process_coordinates = NULL,
-        .interrupt_callback = NULL,
-        .user_data = NULL,
-        .driver_data = NULL,
-    };
-    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    ESP_LOGI("Touch", "Initialize LCD Touch: GT911");
-    // Same settings as ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG(), assigned field by field:
-    // that macro's designated initializers are out of declaration order, which C++ rejects.
-    esp_lcd_panel_io_i2c_config_t tp_io_config = {};
-    tp_io_config.dev_addr = ESP_LCD_TOUCH_IO_I2C_GT911_ADDRESS;
-    tp_io_config.control_phase_bytes = 1;
-    tp_io_config.dc_bit_offset = 0;
-    tp_io_config.lcd_cmd_bits = 16;
-    tp_io_config.flags.disable_control_phase = 1;
-    tp_io_config.scl_speed_hz = TOUCH_I2C_CLK_SPEED_HZ;
-
-    i2c_handle = bsp_i2c_get_handle();
-    ESP_RETURN_ON_ERROR(esp_lcd_new_panel_io_i2c(i2c_handle, &tp_io_config, &tp_io_handle), "TOuch", "");
-    return esp_lcd_touch_new_i2c_gt911(tp_io_handle, &tp_cfg, ret_touch);
-}
-
-void device_init(void)
-{
-    // Level is set before the pin becomes an output, so the peripheral power and the
-    // chip selects never glitch low (a low pulse on the SD card's CS or supply can corrupt it)
-    gpio_config_t out = {};
-    out.mode = GPIO_MODE_OUTPUT;
-    out.pull_up_en = GPIO_PULLUP_ENABLE;
-    for (gpio_num_t pin : {BOARD_POWERON, BOARD_SDCARD_CS, RADIO_CS_PIN, BOARD_TFT_CS}) {
-        gpio_set_level(pin, 1);
-        out.pin_bit_mask = 1ULL << pin;
-        gpio_config(&out);
-    }
-
-    // Let the peripheral supply settle before the SD card is used. A card that is talked to
-    // while its supply is still coming up (or dipping from the display/radio inrush) can
-    // damage its own internal tables and become unreadable. A card that misses the init that
-    // puts it in SPI mode listens to the display's traffic whatever its CS pin says.
-    vTaskDelay(pdMS_TO_TICKS(250));
-
-    /* Configure MISO with pull-up for SD card (must be done before SPI bus init) */
-    gpio_reset_pin(BOARD_SPI_MISO);
-    gpio_set_direction(BOARD_SPI_MISO, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BOARD_SPI_MISO, GPIO_PULLUP_ONLY);
-
-    // Trackball directions: up/down scroll, left/right command history and menu choices
-    for (gpio_num_t pin : {BOARD_TBOX_G01, BOARD_TBOX_G02, BOARD_TBOX_G03, BOARD_TBOX_G04}) {
-        gpio_reset_pin(pin);
-        gpio_set_direction(pin, GPIO_MODE_INPUT);
-        gpio_set_pull_mode(pin, GPIO_PULLUP_ONLY);
-    }
-    
-    // Initialize trackball press button (BOOT button on GPIO 0)
-    gpio_reset_pin(BOARD_BOOT_PIN);
-    gpio_set_direction(BOARD_BOOT_PIN, GPIO_MODE_INPUT);
-    gpio_set_pull_mode(BOARD_BOOT_PIN, GPIO_PULLUP_ONLY);
-}
-
 extern "C" void app_main(void)
 {
     // NVS holds all saved settings; it is only reformatted if unreadable (reported on screen)
     settings_nvs::InitResult settings_state = settings_nvs::init();
 
-    /* Initialize device GPIOs */
-    device_init();
+    /* Peripheral power and pin levels */
+    board::init_power();
 
     /* Load SSH keys from SD card BEFORE LVGL initialization. This (read-only) mount also
        switches the card to SPI mode, so it ignores the display while its CS is high. */
@@ -266,26 +129,9 @@ extern "C" void app_main(void)
         sdcard::unmount();
     }
 
-    /* Initialize display and LVGL */
-    lv_display_t *disp = bsp_display_start();
-    sdcard::share_display_bus();  // SD card is reachable at runtime on the display's SPI bus
-
-    /* Set display brightness to 100% */
-    bsp_display_backlight_on();
-
-    /* Initialize touch */
-    esp_lcd_touch_handle_t touch_handle = NULL;
-    const bsp_touch_config_t bsp_touch_cfg = {};
-    _bsp_touch_new(&bsp_touch_cfg, &touch_handle);
-
-    /* Add touch input (for selected screen) */
-    const lvgl_port_touch_cfg_t touch_cfg = {
-        .disp = disp,
-        .handle = touch_handle,
-        .scale = {.x = 0, .y = 0},
-    };
-
-    lvgl_port_add_touch(&touch_cfg);
+    /* Initialize display, touch and LVGL */
+    board::start_display();
+    sdcard::share_display_bus();  // SD card is reachable at runtime (T-Deck: on the display's SPI bus)
 
     bsp_display_lock(0);
 
@@ -337,6 +183,6 @@ extern "C" void app_main(void)
 
     // keypad_task runs the terminal: menus, WiFi scans, encryption and SSH connects
     xTaskCreate(keypad_task, "keypad_task", 8192, NULL, 5, NULL);
-    xTaskCreate(trackball_task, "trackball_task", 2048, NULL, 5, NULL);
+    board::start_input_tasks();
 }
 

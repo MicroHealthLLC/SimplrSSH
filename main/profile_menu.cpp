@@ -3,7 +3,7 @@
  * Menu-driven, line-based wizard for listing, adding, editing, deleting and
  * connecting with saved SSH profiles. Prompts are printed into the terminal and
  * answered on the normal input line; numbered menus can also be cycled by rolling the
- * trackball left/right and confirmed with a trackball press (up/down scrolls).
+ * trackball left/right (Tab5 keyboard: Up/Down) and confirmed with a trackball press or Enter.
  *
  * This file also holds the wizard plumbing shared with the WiFi menu
  * (wifi_menu.cpp) and the master PIN prompts (vault_menu.cpp).

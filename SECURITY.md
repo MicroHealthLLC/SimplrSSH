@@ -1,6 +1,7 @@
 # Security
 
-SimplrSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3). Its job is to join a
+SimplrSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3) and the M5Stack Tab5
+(ESP32-P4, WiFi through an ESP32-C6 co-processor), built from one source tree. Its job is to join a
 WiFi network the user picks, open SSH sessions to servers the user enters, and - only when
 the user opens ChatGPT with their own API key - talk to api.openai.com. It should talk to
 nothing else.
@@ -98,12 +99,14 @@ a release waits for it to pass on the same commit. Security-relevant gates:
 - **Untrusted SD card input**: restore tests feed damaged and hostile backups (unknown
   namespaces, the device-key namespace, oversized or malformed records) and check that the
   device is left unchanged.
-- **Network surface**: the linked firmware may not contain listening sockets, HTTP servers, OTA,
-  Bluetooth, mDNS or access-point code, must link CA-bundle TLS verification and SSH host key
-  checks, and its generated sdkconfig must keep SoftAP, DHCP server, IPv6 and Bluetooth off.
+- **Network surface**: the linked firmware (both boards) may not contain listening sockets, HTTP
+  servers, OTA (including the Tab5 co-processor's), Bluetooth, mDNS or access-point code, must
+  link CA-bundle TLS verification, SSH host key checks and RAM-only WiFi credential storage,
+  and its generated sdkconfig must keep SoftAP, DHCP server, IPv6 and Bluetooth off.
 - **Supply chain**: actions pinned by SHA and images by digest (enforced), components installed
-  only at the locked versions with verified hashes, and a CVE audit (esp-idf-sbom, NVD) of
-  ESP-IDF, its libraries and the components that blocks on new high/critical findings.
+  only at the locked versions with verified hashes (each board has its own lock file), and a CVE
+  audit (esp-idf-sbom, NVD) of ESP-IDF, its libraries and the components of both images that
+  blocks on new high/critical findings.
 
 Found while introducing these checks:
 
@@ -112,6 +115,22 @@ Found while introducing these checks:
 | WiFi network names (SSIDs) were written to the serial log | Fixed: removed from all log lines |
 | The ESP-IDF v5.5.1 component manager re-solves dependencies after installing the locked ones, so builds compiled LVGL 9.6.0~1 and cmake_utilities 1.1.1 instead of the locked 9.4.0 / 0.5.3 (builds were not reproducible from `dependencies.lock`) | Open: the exact drifted versions are pinned in `.github/scripts/check_dependencies.py`, so any further change fails the gate. Fix by regenerating the lock so both passes agree (changes the firmware; needs testing on a T-Deck) |
 | ESP-IDF v5.5.1 and its bundled mbedTLS 3.6.4 have published high/critical CVEs (11 at the time) | Open: listed in `.github/audit-baseline.txt` pending an ESP-IDF upgrade (needs testing on a T-Deck); not yet assessed for reachability |
+
+### M5Stack Tab5 support (2026-10-05)
+
+A second firmware image (`SimplrSSH-Tab5-*`) for the M5Stack Tab5 with the Tab5 Keyboard,
+built from the same sources; only the board layer differs (`main/board_tab5.cpp`,
+`tab5_keyboard.cpp`, `tab5_keymap.cpp`, `battery_tab5.cpp`, `audio_tab5.cpp`).
+
+| Change | Security review |
+|---|---|
+| WiFi runs on the Tab5's ESP32-C6 co-processor, reached over SDIO through `espressif/esp_hosted` 3.0.9 and `espressif/esp_wifi_remote` 1.6.5; the app keeps calling the usual `esp_wifi_*` API | The SDIO link is a local bus, not a network interface. Same rules as the T-Deck: station mode only (`CONFIG_WIFI_RMT_SOFTAP_SUPPORT` off), no Bluetooth over the co-processor (`CONFIG_ESP_HOSTED_ENABLE_BT_*` off), and the co-processor's own update mechanism (`esp_hosted_slave_ota*`) is not linked (checked in CI) |
+| The C6 would keep its own plain-text copy of the WiFi password in its flash | Both boards now call `esp_wifi_set_storage(WIFI_STORAGE_RAM)` after starting WiFi, so the WiFi driver (on the Tab5: the co-processor) keeps credentials in RAM only; CI requires the call to be linked. Note: a password sent by older firmware on the C6 (e.g. M5Stack's demo) may still be in the C6's flash |
+| New components: `espressif/m5stack_tab5` 1.3.1 (BSP), `esp_lvgl_port` 2.8.0~1, display/touch drivers (ILI9881C, ST7123/ST7121, GT911), PI4IOE5V6408 IO expander, `esp_codec_dev` 1.5.11, and the BSP's declared camera/USB/IMU components | Official Espressif registry releases, pinned with hashes in `dependencies.lock.esp32p4`. None opens sockets. The BSP declares camera (`esp_video`), USB host and IMU components that SimplrSSH never starts: no camera sensor drivers are built, and the linked image contains no USB host, video or `eppp` code (checked with `nm`) |
+| Tab5 Keyboard on its own I2C bus (an STM32 with its own firmware) | Its key events are untrusted input: positions outside the 5x14 matrix are ignored, the event queue is bounded (16 keys), and no key data is logged |
+| SD card on its own SDMMC slot | Same read-only-by-default, never-format, validate-everything rules as the T-Deck |
+
+Hardware behaviour on the Tab5 has not been confirmed on a device yet.
 
 ### Known residual risks
 
@@ -130,6 +149,9 @@ Found while introducing these checks:
   never erases it.
 - `skuodi/libssh2_esp` tracks a libssh2 development snapshot rather than a tagged release.
   Re-verify it against upstream (see above) when updating.
+- **Tab5**: the ESP32-C6 runs Espressif's closed WiFi stack plus whatever esp_hosted firmware
+  the Tab5 shipped with; SimplrSSH neither updates nor verifies it. A compromised C6 sees WiFi
+  traffic (still TLS / SSH protected end to end), as a compromised WiFi driver would.
 - The CVE audit only sees packages with a CPE in the SBOM (ESP-IDF, mbedTLS, lwIP, FreeRTOS,
   newlib, cJSON, wpa_supplicant...). Registry components such as libssh2 and LVGL are listed but
   not matched against the NVD; review their upstream advisories when updating them.

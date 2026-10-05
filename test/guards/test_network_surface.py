@@ -58,12 +58,25 @@ check_firmware = repo.ci_script("check_firmware")
 
 class ConfigSurface(unittest.TestCase):
     def test_committed_sdkconfig(self):
-        self.assertEqual(check_firmware.sdkconfig_problems(repo.sdkconfig()), [])
+        for name in ("sdkconfig", "sdkconfig.tab5"):
+            with self.subTest(sdkconfig=name):
+                self.assertEqual(check_firmware.sdkconfig_problems(repo.sdkconfig(name)), [])
+
+    def test_tab5_checked_with_its_own_options(self):
+        self.assertEqual(repo.sdkconfig("sdkconfig.tab5").get("CONFIG_IDF_TARGET_ESP32P4"), "y")
+        self.assertIn("CONFIG_WIFI_RMT_NVS_ENABLED", check_firmware.required_config(repo.sdkconfig("sdkconfig.tab5")))
 
     def test_defaults_declare_the_surface(self):
         defaults = repo.read("sdkconfig.defaults")
         for option in ("CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n", "CONFIG_LWIP_DHCPS=n", "CONFIG_LWIP_IPV6=n"):
             self.assertIn(option, defaults)
+        tab5 = repo.read("sdkconfig.defaults.esp32p4")
+        for option in ("CONFIG_WIFI_RMT_SOFTAP_SUPPORT=n", "CONFIG_WIFI_RMT_NVS_ENABLED=n",
+                       "CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=n", "CONFIG_ESP_HOSTED_ENABLE_BT_BLUEDROID=n"):
+            self.assertIn(option, tab5)
+
+    def test_wifi_password_not_stored_by_the_driver(self):
+        self.assertIn("esp_wifi_set_storage(WIFI_STORAGE_RAM)", SRC["main/ssh_terminal.cpp"])
 
 
 if __name__ == "__main__":

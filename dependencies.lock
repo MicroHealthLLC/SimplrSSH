@@ -258,6 +258,6 @@ direct_dependencies:
 - idf
 - lvgl/lvgl
 - skuodi/libssh2_esp
-manifest_hash: 3abf9069e7fcc57998c2f2dd0071c29b759cf0cc5a26b8f3ba14943a670064d9
+manifest_hash: 4c12f1e680ea1d2d5d6964847871992f24f6c740017658748d1aa2dc5cefa0cf
 target: esp32s3
 version: 2.0.0

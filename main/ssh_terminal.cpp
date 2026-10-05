@@ -22,6 +22,7 @@
 #include "lwip/sockets.h"
 #include "lwip/netdb.h"
 #include "bsp/esp-bsp.h"
+#include "board.hpp"
 #include <cstring>
 #include <algorithm>
 #include <sys/socket.h>
@@ -156,6 +157,10 @@ esp_err_t SSHTerminal::start_wifi_driver()
     }
     
     ESP_LOGI(TAG, "Starting WiFi driver...");
+    esp_err_t err = board::wifi_prepare();
+    if (err != ESP_OK) {
+        return err;
+    }
     s_wifi_event_group = xEventGroupCreate();
     
     ESP_ERROR_CHECK(esp_netif_init());
@@ -164,6 +169,9 @@ esp_err_t SSHTerminal::start_wifi_driver()
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    // Networks are saved by the app (password in the vault): the WiFi driver - on the Tab5, its
+    // co-processor - must not keep its own plain-text copy in flash
+    esp_wifi_set_storage(WIFI_STORAGE_RAM);
 
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
                                                         ESP_EVENT_ANY_ID,
@@ -185,7 +193,12 @@ esp_err_t SSHTerminal::start_wifi_driver()
 esp_err_t SSHTerminal::init_wifi(const char* ssid, const char* password)
 {
     ESP_LOGI(TAG, "Connecting WiFi...");
-    start_wifi_driver();
+    if (start_wifi_driver() != ESP_OK) {
+        if (!wifi_quiet_connect) {
+            append_text("WiFi hardware is not responding.\n");
+        }
+        return ESP_FAIL;
+    }
     
     // Leave the current network first (switching networks)
     if (s_connect_requested || wifi_connected) {
@@ -309,10 +322,13 @@ void SSHTerminal::wifi_link_lost()
 esp_err_t SSHTerminal::scan_wifi(std::vector<WifiScanResult>& results)
 {
     results.clear();
-    start_wifi_driver();
+    esp_err_t err = start_wifi_driver();
+    if (err != ESP_OK) {
+        return err;
+    }
 
     wifi_scan_config_t scan_config = {};
-    esp_err_t err = esp_wifi_scan_start(&scan_config, true);
+    err = esp_wifi_scan_start(&scan_config, true);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "WiFi scan failed: %s", esp_err_to_name(err));
         return err;
@@ -368,21 +384,22 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_clear_flag(terminal_screen, LV_OBJ_FLAG_SCROLLABLE);
 
     // Full-screen terminal: one thin status line, text area, one input line
-    const int32_t status_h = 13;
-    const int32_t input_h = 16;
+    const board::Ui& ui = board::ui();
+    const int32_t status_h = ui.status_h;
+    const int32_t input_h = ui.input_h;
     const int32_t screen_w = lv_display_get_horizontal_resolution(NULL);
     const int32_t screen_h = lv_display_get_vertical_resolution(NULL);
 
     status_bar = lv_label_create(terminal_screen);
     lv_label_set_text(status_bar, "");
     lv_obj_set_style_text_color(status_bar, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(status_bar, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(status_bar, ui.small, 0);
     lv_obj_align(status_bar, LV_ALIGN_TOP_LEFT, 2, 1);
     
     byte_counter_label = lv_label_create(terminal_screen);
     lv_label_set_text(byte_counter_label, "");
     lv_obj_set_style_text_color(byte_counter_label, lv_color_hex(0x00FFFF), 0);
-    lv_obj_set_style_text_font(byte_counter_label, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(byte_counter_label, ui.small, 0);
     lv_obj_align(byte_counter_label, LV_ALIGN_TOP_RIGHT, -2, 1);
 
     terminal_output = lv_textarea_create(terminal_screen);
@@ -390,7 +407,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_align(terminal_output, LV_ALIGN_TOP_LEFT, 0, status_h);
     lv_obj_set_style_bg_color(terminal_output, lv_color_black(), 0);
     lv_obj_set_style_text_color(terminal_output, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(terminal_output, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_font(terminal_output, ui.text, 0);
     lv_obj_set_style_border_width(terminal_output, 0, 0);
     lv_obj_set_style_radius(terminal_output, 0, 0);
     lv_obj_set_style_pad_all(terminal_output, 0, 0);
@@ -403,7 +420,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_event_cb(terminal_output, scroll_end_cb, LV_EVENT_SCROLL_END, this);
 
     // Tell SSH servers the real screen size so output wraps to fit
-    const lv_font_t* font = &lv_font_montserrat_10;
+    const lv_font_t* font = ui.text;
     int32_t char_w = lv_font_get_glyph_width(font, '0', 0);
     int32_t line_h = lv_font_get_line_height(font);
     pty_cols = char_w > 0 ? (screen_w - 4) / char_w : 80;
@@ -431,7 +448,7 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     input_label = lv_label_create(input_container);
     lv_label_set_text(input_label, "> ");
     lv_obj_set_style_text_color(input_label, lv_color_hex(0xFFFF00), 0);
-    lv_obj_set_style_text_font(input_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(input_label, ui.input, 0);
     lv_label_set_long_mode(input_label, LV_LABEL_LONG_CLIP);
     lv_obj_align(input_label, LV_ALIGN_LEFT_MID, 0, 0);
     
@@ -743,7 +760,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
     else if (cmd == "help") {
         append_text("Available commands:\n");
         append_text("  menu - Home menu (also 'exit' when not connected)\n");
-        append_text("  chat - ChatGPT (hold the trackball to talk)\n");
+        append_text((std::string("  chat - ChatGPT (") + board::HINT_TALK + " to talk)\n").c_str());
         append_text("  wifi - WiFi menu: scan, pick a network, save it\n");
         append_text("  wifi scan|saved|list|forget|off\n");
         append_text("  connect - Scan and pick a WiFi network\n");
@@ -762,7 +779,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
         append_text("  exit - Disconnect SSH\n");
         append_text("  clear - Clear terminal\n");
         append_text("  help - Show this help\n");
-        append_text("Trackball up/down or drag: scroll. Left/right: history.\n");
+        append_text((std::string(board::HINT_SCROLL) + " " + board::HINT_HISTORY + "\n").c_str());
     }
     else if (ssh_connected) {
         send_command(cmd.c_str());
@@ -819,6 +836,13 @@ void SSHTerminal::handle_key_input(char key)
             cursor_pos = 0;
             history_index = -1;
         }
+    } else if (ssh_connected && !chat_active && !wizard_active() && key != 8 && key > 0 && key < 32) {
+        // Ctrl+letter, Tab and Esc from a full keyboard go straight to the server,
+        // like the side panel's keys (the typed line is sent with Enter)
+        write_channel(&key, 1);
+    } else if (wizard_active() && key == 3) {
+        handle_key_input(27);   // Ctrl+C cancels a menu like Esc
+        return;
     } else if (key == 8 || key == 127) {
         // Backspace - delete character before cursor
         if (cursor_pos > 0 && !current_input.empty()) {
@@ -1018,6 +1042,15 @@ void SSHTerminal::move_cursor_end()
     cursor_pos = current_input.length();
     cursor_visible = true;
     update_input_display();
+}
+
+void SSHTerminal::delete_at_cursor()
+{
+    if (cursor_pos < current_input.length()) {
+        current_input.erase(cursor_pos, 1);
+        cursor_visible = true;
+        update_input_display();
+    }
 }
 
 void SSHTerminal::delete_current_history_entry()
@@ -1750,34 +1783,37 @@ void SSHTerminal::update_status_bar()
 
 void SSHTerminal::create_side_panel()
 {
+    const board::Ui& ui = board::ui();
     side_panel = lv_obj_create(terminal_screen);
-    lv_obj_set_size(side_panel, 100, lv_pct(100));
+    lv_obj_set_size(side_panel, ui.panel_w, lv_pct(100));
     lv_obj_set_style_bg_color(side_panel, lv_color_hex(0x101010), 0);
     lv_obj_set_style_bg_opa(side_panel, LV_OPA_80, 0);
     lv_obj_set_style_border_color(side_panel, lv_color_hex(0x00FF00), 0);
     lv_obj_set_style_border_width(side_panel, 2, 0);
     lv_obj_set_scrollbar_mode(side_panel, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(side_panel, LV_DIR_VER);
-    lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 100, 0);
+    lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, ui.panel_w, 0);
     lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
     
     lv_obj_t* title = lv_label_create(side_panel);
     lv_label_set_text(title, "Keys");
     lv_obj_set_style_text_color(title, lv_color_hex(0x00FF00), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 5);
+    lv_obj_set_style_text_font(title, ui.input, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, ui.gap);
     
-    auto create_key_button = [this](const char* label, const char* key_seq, int y_offset) {
+    // Buttons stacked below the title, one row (button + gap) apart
+    int row = 0;
+    auto create_key_button = [this, &ui, &row](const char* label, const char* key_seq) {
         lv_obj_t* btn = lv_btn_create(side_panel);
-        lv_obj_set_size(btn, 85, 30);
-        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, y_offset);
+        lv_obj_set_size(btn, ui.button_w, ui.button_h);
+        lv_obj_align(btn, LV_ALIGN_TOP_MID, 0, (row++ + 1) * (ui.button_h + ui.gap + 1));
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x1A1A1A), 0);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x00CC00), LV_STATE_PRESSED);
         
         lv_obj_t* btn_label = lv_label_create(btn);
         lv_label_set_text(btn_label, label);
         lv_obj_set_style_text_color(btn_label, lv_color_hex(0x00FF00), 0);
-        lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_font(btn_label, ui.small, 0);
         lv_obj_center(btn_label);
         
         lv_obj_set_user_data(btn, (void*)key_seq);
@@ -1786,18 +1822,18 @@ void SSHTerminal::create_side_panel()
         return btn;
     };
 
-    create_key_button("<-", "LEFT", 35);
-    create_key_button("->", "RIGHT", 70);
-    create_key_button("Line <", "HOME", 105);
-    create_key_button("> Line", "END", 140);
-    create_key_button("Ctrl+C", "\x03", 175);
-    create_key_button("Ctrl+Z", "\x1A", 210);
-    create_key_button("Ctrl+D", "\x04", 245);
-    create_key_button("Ctrl+L", "\x0C", 280);
-    create_key_button("Tab", "\t", 315);
-    create_key_button("Esc", "\x1B", 350);
-    create_key_button("Exit SSH", "EXIT", 385);
-    create_key_button("Clear", "CLEAR", 420);
+    create_key_button("<-", "LEFT");
+    create_key_button("->", "RIGHT");
+    create_key_button("Line <", "HOME");
+    create_key_button("> Line", "END");
+    create_key_button("Ctrl+C", "\x03");
+    create_key_button("Ctrl+Z", "\x1A");
+    create_key_button("Ctrl+D", "\x04");
+    create_key_button("Ctrl+L", "\x0C");
+    create_key_button("Tab", "\t");
+    create_key_button("Esc", "\x1B");
+    create_key_button("Exit SSH", "EXIT");
+    create_key_button("Clear", "CLEAR");
 }
 
 void SSHTerminal::toggle_side_panel()
@@ -1809,7 +1845,7 @@ void SSHTerminal::toggle_side_panel()
         lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 0, 0);
     } else {
         lv_obj_add_flag(side_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, 100, 0);
+        lv_obj_align(side_panel, LV_ALIGN_TOP_RIGHT, board::ui().panel_w, 0);
     }
 }
 
@@ -1865,16 +1901,22 @@ void SSHTerminal::send_special_key(const char* sequence)
     }
     
     if (ssh_connected && channel) {
-        xSemaphoreTake(ssh_mutex, portMAX_DELAY);
-        if (channel) {
-            libssh2_channel_write(channel, sequence, strlen(sequence));
-        }
-        xSemaphoreGive(ssh_mutex);
+        write_channel(sequence, strlen(sequence));
     } else {
         ESP_LOGW(TAG, "Cannot send special key - not connected");
     }
     
     toggle_side_panel();
+}
+
+// Sends raw bytes (control keys) to the SSH session
+void SSHTerminal::write_channel(const char* data, size_t len)
+{
+    xSemaphoreTake(ssh_mutex, portMAX_DELAY);
+    if (channel) {
+        libssh2_channel_write(channel, data, len);
+    }
+    xSemaphoreGive(ssh_mutex);
 }
 
 void SSHTerminal::gesture_event_cb(lv_event_t* e)

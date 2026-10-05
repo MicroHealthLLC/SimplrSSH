@@ -3,6 +3,7 @@
  */
 
 #include "openai_client.hpp"
+#include "board.hpp"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -16,10 +17,12 @@
 static const char *TAG = "OPENAI";
 static const char *API = "https://api.openai.com/v1/";
 
-// Keep answers short and plain: they are read on a 320x240 screen
-static const char *SYSTEM_PROMPT =
-    "You are a concise assistant on a tiny handheld with a 320x240 text screen. "
-    "Answer briefly in plain text: no markdown, tables or code fences unless asked.";
+// Keep answers short and plain: they are read on a small screen (board::SCREEN_DESC)
+static std::string system_prompt()
+{
+    return std::string("You are a concise assistant on ") + board::SCREEN_DESC + ". "
+           "Answer briefly in plain text: no markdown, tables or code fences unless asked.";
+}
 static const int MAX_REPLY_TOKENS = 600;
 
 static const size_t MAX_MODELS_RESPONSE = 256 * 1024;  // The model list is ~30 KB; kept in PSRAM
@@ -121,7 +124,7 @@ esp_err_t openai::chat(const std::string& key, const std::string& model, const s
         cJSON_AddStringToObject(m, "content", text);
         cJSON_AddItemToArray(messages, m);
     };
-    add("system", SYSTEM_PROMPT);
+    add("system", system_prompt().c_str());
     for (const auto& m : history) {
         add(m.from_user ? "user" : "assistant", m.text.c_str());
     }

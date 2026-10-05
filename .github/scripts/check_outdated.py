@@ -2,7 +2,8 @@
 """
 Report outdated dependencies (report only, never fails the build).
 
-Compares the versions pinned in dependencies.lock / main/idf_component.yml against
+Compares the versions pinned in each board's lock file (dependencies.lock for the T-Deck,
+dependencies.lock.esp32p4 for the Tab5) / main/idf_component.yml against
 the latest releases on the ESP Component Registry, and the ESP-IDF version used by
 CI against the latest ESP-IDF release on GitHub. Writes a Markdown table to
 $GITHUB_STEP_SUMMARY (or stdout) and a GitHub warning annotation per outdated item.
@@ -56,9 +57,27 @@ def ci_idf_version():
         return None
 
 
+LOCK_FILES = ("dependencies.lock", "dependencies.lock.esp32p4")
+
+
+def locked_components():
+    """{name: (version, lock file)} over every board's lock (a component in both boards'
+    locks at different versions is listed once per version)."""
+    found = {}
+    for path in LOCK_FILES:
+        if not os.path.exists(path):
+            continue
+        with open(path) as f:
+            lock = yaml.safe_load(f)
+        for name, info in lock.get("dependencies", {}).items():
+            if name == "idf" or info.get("source", {}).get("type") != "service":
+                continue
+            key = (name, str(info.get("version")))
+            found.setdefault(key, path)
+    return found
+
+
 def main():
-    with open("dependencies.lock") as f:
-        lock = yaml.safe_load(f)
     with open(os.path.join("main", "idf_component.yml")) as f:
         manifest = yaml.safe_load(f)
 
@@ -66,10 +85,7 @@ def main():
     rows = []
     outdated = 0
 
-    for name, info in sorted(lock.get("dependencies", {}).items()):
-        if name == "idf" or info.get("source", {}).get("type") != "service":
-            continue
-        current = str(info.get("version"))
+    for (name, current), lock_path in sorted(locked_components().items()):
         try:
             latest = latest_registry_version(name)
         except Exception as e:  # Registry hiccups must not break the report
@@ -79,7 +95,7 @@ def main():
         outdated += is_outdated
         rows.append((name, current, latest, "update available" if is_outdated else "up to date", name in direct))
         if is_outdated:
-            where = "main/idf_component.yml" if name in direct else "dependencies.lock"
+            where = "main/idf_component.yml" if name in direct else lock_path
             kind = "" if name in direct else " (transitive dependency)"
             print(f"::warning file={where}::{name} {current} is outdated{kind}; latest is {latest}")
 
@@ -101,7 +117,7 @@ def main():
         "## Dependency check",
         "",
         f"**{outdated} outdated** (report only - updating is a deliberate change: bump the pin, "
-        "run `idf.py update-dependencies`, build, test on the device, commit the new `dependencies.lock`).",
+        "run `idf.py update-dependencies`, build, test on the device, commit the board's new lock file).",
         "",
         "| Dependency | Pinned | Latest | Status | Direct |",
         "|---|---|---|---|---|",

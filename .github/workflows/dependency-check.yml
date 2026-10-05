@@ -9,11 +9,13 @@ on:
     branches: [main]
     paths:
       - 'dependencies.lock'
+      - 'dependencies.lock.esp32p4'
       - 'main/idf_component.yml'
       - '.github/workflows/build.yml'
   pull_request:
     paths:
       - 'dependencies.lock'
+      - 'dependencies.lock.esp32p4'
       - 'main/idf_component.yml'
   workflow_dispatch:
 

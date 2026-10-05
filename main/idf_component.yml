@@ -1,13 +1,42 @@
 ## IDF Component Manager Manifest File
-## Direct dependencies are pinned to exact versions; dependencies.lock (project root)
-## pins the transitive ones. Update both together: change a version here, then run
-## `idf.py update-dependencies` and commit the new dependencies.lock.
+## Direct dependencies are pinned to exact versions; the lock files (project root) pin the
+## transitive ones: dependencies.lock for the T-Deck (esp32s3), dependencies.lock.esp32p4 for
+## the Tab5 (CMakeLists.txt picks one by target). Update them together: change a version here,
+## then run `idf.py update-dependencies` for each board (see AI_RULES.md, Workflow) and commit
+## both lock files. Components used by one board only carry a target rule.
 dependencies:
   ## Required IDF version (CI builds with v5.5.1)
   idf:
     version: '~5.5.1'
-  espressif/esp_bsp_generic: '3.1.1'
-  espressif/esp_lcd_touch_gt911: '1.2.1'
   lvgl/lvgl: '9.4.0'
   skuodi/libssh2_esp: '1.1.0'
-  espressif/esp_codec_dev: '1.6.2'   # ES7210 microphone codec (voice input)
+  ## LilyGO T-Deck (esp32s3)
+  espressif/esp_bsp_generic:
+    version: '3.1.1'
+    rules:
+      - if: 'target == esp32s3'
+  espressif/esp_lcd_touch_gt911:
+    version: '1.2.1'
+    rules:
+      - if: 'target == esp32s3'
+  espressif/esp_codec_dev:
+    version: '1.6.2'   # ES7210 microphone codec (voice input); the Tab5 BSP brings its own
+    rules:
+      - if: 'target == esp32s3'
+  ## M5Stack Tab5 (esp32p4)
+  espressif/m5stack_tab5:
+    version: '1.3.1'   # Display (ILI9881C / ST7123 / ST7121), touch, IO expanders, codecs
+    rules:
+      - if: 'target == esp32p4'
+  espressif/esp_lvgl_port:
+    version: '2.8.0~1'   # 2.9.0 needs a MIPI-DSI callback that ESP-IDF 5.5.1 doesn't have
+    rules:
+      - if: 'target == esp32p4'
+  espressif/esp_hosted:
+    version: '3.0.9'   # WiFi through the ESP32-C6 co-processor (SDIO)
+    rules:
+      - if: 'target == esp32p4'
+  espressif/esp_wifi_remote:
+    version: '1.6.5'   # esp_wifi_* API on the ESP32-P4, backed by esp_hosted
+    rules:
+      - if: 'target == esp32p4'

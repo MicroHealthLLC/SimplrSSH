@@ -1,8 +1,6 @@
-# List of source files
+# Sources shared by every board
 set(SOURCES
     "deck_base.cpp"
-    "battery_measurement.cpp"
-    "c3_keyboard.cpp"
     "ssh_terminal.cpp"
     "command_redact.cpp"
     "connection_profiles.cpp"
@@ -33,7 +31,6 @@ set(REQUIRED_COMPONENTS
     nvs_flash
     esp_partition
     app_update
-    esp_lcd_touch_gt911
     fatfs
     sdmmc
     esp_wifi
@@ -43,8 +40,33 @@ set(REQUIRED_COMPONENTS
     esp_http_client
     json
     esp_driver_i2s
+    esp_driver_gpio
+    esp_driver_i2c
+    esp_adc
     mbedtls
 )
+
+# The build target picks the board (main/include/board.hpp):
+#   esp32s3 - LilyGO T-Deck / T-Deck Plus (ESP32-C3 keyboard, trackball, ST7789 320x240)
+#   esp32p4 - M5Stack Tab5 with the Tab5 Keyboard (MIPI-DSI 1280x720, WiFi on its ESP32-C6)
+if(IDF_TARGET STREQUAL "esp32p4")
+    list(APPEND SOURCES
+        "board_tab5.cpp"
+        "tab5_keyboard.cpp"
+        "tab5_keymap.cpp"
+        "battery_tab5.cpp"
+        "audio_tab5.cpp"
+    )
+    # m5stack_tab5 (BSP) and esp_wifi_remote come from main/idf_component.yml
+else()
+    list(APPEND SOURCES
+        "board_tdeck.cpp"
+        "c3_keyboard.cpp"
+        "battery_measurement.cpp"
+        "audio_tdeck.cpp"
+    )
+    list(APPEND REQUIRED_COMPONENTS esp_lcd_touch_gt911)
+endif()
 
 idf_component_register(
     SRCS ${SOURCES}
