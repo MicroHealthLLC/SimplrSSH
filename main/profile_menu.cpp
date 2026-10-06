@@ -65,6 +65,7 @@ bool SSHTerminal::wizard_input_masked() const
         case WizardStep::Password:
         case WizardStep::KeyPassphrase:
         case WizardStep::ConnectSecret:
+        case WizardStep::SshKeyPassphrase:
         case WizardStep::WifiPassword:
         case WizardStep::VaultUnlock:
         case WizardStep::VaultOldPin:
@@ -110,8 +111,8 @@ void SSHTerminal::wizard_handle_input(const std::string& raw_input)
 
     if (!wizard_input_masked() && to_lower(input) == "cancel") {
         append_text("Cancelled.\n");
-        if (wizard.step == WizardStep::HostTrust) {
-            ssh_teardown();  // Close the half-open connection waiting for trust
+        if (wizard_holds_connection()) {
+            ssh_teardown();  // Close the half-open connection waiting for trust or a passphrase
         }
         go_home();
         return;
@@ -171,10 +172,24 @@ void SSHTerminal::wizard_reset()
 // Connection profiles
 // ---------------------------------------------------------------------------
 
+// PEM keys say so when they have a passphrase ("Proc-Type: 4,ENCRYPTED", "BEGIN ENCRYPTED")
 bool SSHTerminal::key_is_encrypted(const std::string& key_name)
 {
     const char* key = get_loaded_key(key_name.c_str(), NULL);
     return key && strstr(key, "ENCRYPTED") != NULL;
+}
+
+// "BEGIN OPENSSH PRIVATE KEY": ssh-keygen's default format, which libssh2 can't read with mbed TLS
+bool SSHTerminal::key_is_openssh_format(const std::string& key_name)
+{
+    const char* key = get_loaded_key(key_name.c_str(), NULL);
+    return key && strstr(key, "OPENSSH PRIVATE KEY") != NULL;
+}
+
+// Steps that wait while an SSH connection is open: cancelling them closes it
+bool SSHTerminal::wizard_holds_connection() const
+{
+    return wizard.step == WizardStep::HostTrust || wizard.step == WizardStep::SshKeyPassphrase;
 }
 
 std::string SSHTerminal::profile_summary(const ConnectionProfile& p, bool secret_saved)
@@ -185,7 +200,7 @@ std::string SSHTerminal::profile_summary(const ConnectionProfile& p, bool secret
     }
     if (p.auth == ConnectionProfile::Auth::Key) {
         s += " [key " + p.key_name;
-        if (key_is_encrypted(p.key_name)) {
+        if (key_is_encrypted(p.key_name) || secret_saved) {
             s += secret_saved ? ", pass saved" : ", pass: ask";
         }
         s += "]";
@@ -386,7 +401,8 @@ bool SSHTerminal::profile_step_prompt()
             int current = 0;
             for (size_t i = 0; i < keys.size(); i++) {
                 std::string line = " " + std::to_string(i + 1) + ") " + keys[i] +
-                                   (key_is_encrypted(keys[i]) ? " (passphrase)" : "") + "\n";
+                                   (key_is_openssh_format(keys[i]) ? " (OpenSSH format: convert to PEM)"
+                                    : key_is_encrypted(keys[i]) ? " (passphrase)" : "") + "\n";
                 append_text(line.c_str());
                 if (keys[i] == to_lower(d.key_name)) {
                     current = i + 1;
@@ -404,8 +420,14 @@ bool SSHTerminal::profile_step_prompt()
             break;
 
         case WizardStep::KeyPassphrase:
-            text = can_keep_secret ? "Key passphrase (Enter = keep saved, - = ask each connect): "
-                                   : "Key passphrase (Enter = ask each connect): ";
+            // Offered for every key: a key that doesn't say it has one may still have one
+            if (key_is_encrypted(d.key_name)) {
+                text = can_keep_secret ? "Key passphrase (Enter = keep saved, - = ask each connect): "
+                                       : "Key passphrase (Enter = ask each connect): ";
+            } else {
+                text = can_keep_secret ? "Key passphrase (Enter = keep saved, - = none): "
+                                       : "Key passphrase, if it has one (Enter = none): ";
+            }
             break;
 
         case WizardStep::Review: {
@@ -437,6 +459,10 @@ bool SSHTerminal::profile_step_prompt()
                  : "Password for " + p.username + "@" + p.host + ": ";
             break;
         }
+
+        case WizardStep::SshKeyPassphrase:
+            text = "Key passphrase (Enter = cancel): ";
+            break;
 
         default:
             return false;
@@ -610,12 +636,11 @@ bool SSHTerminal::profile_step_input(const std::string& raw_input, const std::st
                 vault::wipe(wizard.secret);
             }
             d.key_name = selected;
-            if (key_is_encrypted(selected)) {
-                wizard_goto(WizardStep::KeyPassphrase);
-            } else {
-                wizard.secret_change = SecretChange::Clear;
-                wizard_goto(WizardStep::Review);
+            if (key_is_openssh_format(selected)) {
+                append_text("Note: OpenSSH-format keys can't be used yet. Convert it to PEM on your\n"
+                            "computer: ssh-keygen -p -m PEM -f KEYFILE\n");
             }
+            wizard_goto(WizardStep::KeyPassphrase);
             break;
         }
 
@@ -666,6 +691,18 @@ bool SSHTerminal::profile_step_input(const std::string& raw_input, const std::st
                 append_text("Not deleted.\n");
             }
             wizard_done();
+            break;
+
+        case WizardStep::SshKeyPassphrase:
+            wizard_reset();
+            if (raw_input.empty()) {
+                append_text("Cancelled.\n");
+                ssh_teardown();
+                go_home();
+            } else {
+                pending_ssh.passphrase = raw_input;   // Wiped once used (ssh_finish)
+                ssh_finish();
+            }
             break;
 
         case WizardStep::ConnectSecret: {
@@ -760,7 +797,9 @@ void SSHTerminal::start_profile_connect(int index)
         return;
     }
 
-    bool needs_secret = p.auth == ConnectionProfile::Auth::Password || key_is_encrypted(p.key_name);
+    // A key's passphrase: when the key says it has one, or one was saved with the profile
+    bool needs_secret = p.auth == ConnectionProfile::Auth::Password || key_is_encrypted(p.key_name) ||
+                        p.secret_saved;
     if (!needs_secret) {
         wizard_reset();
         connect_profile(p, "");

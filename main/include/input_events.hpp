@@ -27,12 +27,16 @@ namespace board
         INPUT_CURSOR_HOME,
         INPUT_CURSOR_END,
         INPUT_DELETE,         // Delete the character at the cursor
+        INPUT_F1,             // Function keys F1-F12 (INPUT_F1 + 0..11), full-screen SSH terminal only
+        INPUT_F12 = INPUT_F1 + 11,
     };
 
     // Keyboard values (board::read_key()): 0 when no key is waiting, a byte (printable ASCII,
     // '\n', 8 backspace, 27 Esc, '\t', or a Ctrl+key control code 1..31), or
-    // KEY_EVENT | InputEvent for keys that act like the trackball (arrows, scrolling).
+    // KEY_EVENT | InputEvent for keys that act like the trackball (arrows, scrolling), or
+    // KEY_ALT | byte for a key typed with Alt (Meta: Esc first, in the full-screen SSH terminal).
     static const uint32_t KEY_EVENT = 0x100;
+    static const uint32_t KEY_ALT = 0x200;
 }
 
 #endif

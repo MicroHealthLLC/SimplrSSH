@@ -661,7 +661,7 @@ void SSHTerminal::on_trackball_hold(bool start, bool long_press)
         }
     } else if (chat_recording) {
         chat_recording = false;  // The worker stops recording and sends
-    } else if (long_press && !chat_active) {
+    } else if (long_press && !chat_active && !raw_keys()) {
         delete_current_history_entry();
     }
 }

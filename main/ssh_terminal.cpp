@@ -25,6 +25,7 @@
 #include "board.hpp"
 #include <cstring>
 #include <algorithm>
+#include <string_view>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -456,6 +457,19 @@ lv_obj_t* SSHTerminal::create_terminal_screen()
     lv_obj_add_flag(input_label, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(input_label, input_touch_event_cb, LV_EVENT_CLICKED, this);
 
+    // Full-screen terminal for SSH sessions, on boards that have one (TUI programs)
+    term = board::term_screen();
+    if (term) {
+        term->create(terminal_screen, 0, status_h, screen_w, screen_h - status_h);
+        // Dragging in a full-screen program scrolls it (LVGL's task, display lock held)
+        term->set_send([this](const char* data, size_t len) {
+            if (ssh_connected) {
+                last_input_ms = esp_timer_get_time() / 1000;
+                write_channel(data, len);
+            }
+        });
+    }
+
     create_side_panel();
     
     lv_obj_add_event_cb(terminal_screen, gesture_event_cb, LV_EVENT_GESTURE, this);
@@ -550,6 +564,16 @@ lv_obj_t* SSHTerminal::visible_view() const
 
 void SSHTerminal::scroll_screen(int direction)
 {
+    if (raw_keys() && direction != 0) {
+        // Full-screen programs page themselves; at the shell, scroll back through its output
+        last_input_ms = esp_timer_get_time() / 1000;
+        if (term->alt_screen()) {
+            term_key(direction > 0 ? TermScreen::Key::PageUp : TermScreen::Key::PageDown);
+        } else {
+            term->scroll(direction);
+        }
+        return;
+    }
     lv_obj_t* view = visible_view();
     if (!view || direction == 0) {
         return;
@@ -642,6 +666,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
             if (init_wifi(ssid.c_str(), password.c_str()) == ESP_OK) {
                 append_text("WiFi connected successfully!\n");
                 wifi_remember_network(ssid, password, false);
+                go_home();
             } else {
                 append_text("WiFi connection failed!\n");
             }
@@ -704,11 +729,8 @@ void SSHTerminal::execute_command(const std::string& cmd)
             size_t key_len = 0;
             const char* key_data = get_loaded_key(keyfile.c_str(), &key_len);
             
-            if (key_data && key_len > 0 && key_is_encrypted(keyfile) && passphrase.empty()) {
-                append_text("Key is passphrase-protected:\n");
-                append_text("  sshkey <HOST> <PORT> <USER> <KEYFILE> <PASSPHRASE>\n");
-                append_text("  or save it in a profile: profile add\n");
-            } else if (key_data && key_len > 0) {
+            if (key_data && key_len > 0) {
+                // A key with a passphrase that wasn't given is asked for once connected
                 append_text("Using key file: ");
                 append_text(keyfile.c_str());
                 append_text("\n");
@@ -788,9 +810,77 @@ void SSHTerminal::execute_command(const std::string& cmd)
     }
 }
 
+// Full-screen SSH terminal: keys go straight to the server, like a desktop terminal's
+bool SSHTerminal::raw_keys() const
+{
+    return term && term->is_open() && ssh_connected && !chat_active && !wizard_active();
+}
+
+void SSHTerminal::term_key(TermScreen::Key key)
+{
+    last_input_ms = esp_timer_get_time() / 1000;
+    term->scroll_to_newest();
+    std::string seq = term->key(key);
+    write_channel(seq.data(), seq.size());
+}
+
+// Enter sends CR and Backspace DEL, as terminals do
+static char terminal_byte(char key)
+{
+    return key == '\n' ? '\r' : key == 8 ? 0x7F : key;
+}
+
+void SSHTerminal::function_key(int n)
+{
+    if (raw_keys() && n >= 0 && n < 12) {
+        term_key((TermScreen::Key)((int)TermScreen::Key::F1 + n));
+    }
+}
+
+void SSHTerminal::alt_key(char key)
+{
+    if (!raw_keys()) {
+        handle_key_input(key);   // Menus and the input line: just the key
+        return;
+    }
+    last_input_ms = esp_timer_get_time() / 1000;
+    term->scroll_to_newest();
+    const char seq[2] = {27, terminal_byte(key)};
+    write_channel(seq, sizeof(seq));
+}
+
+// Shows the full-screen terminal instead of the text view and input line, or back
+void SSHTerminal::show_term_view(bool show)
+{
+    if (!term || (!show && !term->is_open())) {
+        return;
+    }
+    lv_obj_t* input_container = input_label ? lv_obj_get_parent(input_label) : NULL;
+    if (show) {
+        term->open();   // Always a blank screen for a new session
+        lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+        if (input_container) {
+            lv_obj_add_flag(input_container, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else {
+        term->close();
+        lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
+        if (input_container) {
+            lv_obj_clear_flag(input_container, LV_OBJ_FLAG_HIDDEN);
+        }
+        scroll_to_newest();
+    }
+}
+
 void SSHTerminal::handle_key_input(char key)
 {
     last_input_ms = esp_timer_get_time() / 1000;
+    if (raw_keys()) {
+        term->scroll_to_newest();
+        char out = terminal_byte(key);
+        write_channel(&out, 1);
+        return;
+    }
     scroll_to_newest();
 
     if (wizard_active() && (key == '\n' || key == '\r')) {
@@ -804,7 +894,7 @@ void SSHTerminal::handle_key_input(char key)
         current_input.clear();
         cursor_pos = 0;
         append_text("\nCancelled.\n");
-        if (wizard.step == WizardStep::HostTrust) {
+        if (wizard_holds_connection()) {
             ssh_teardown();
         }
         go_home();
@@ -957,6 +1047,9 @@ void SSHTerminal::cursor_blink_cb(lv_timer_t* timer)
     if (terminal) {
         terminal->cursor_visible = !terminal->cursor_visible;
         terminal->update_input_display();
+        if (terminal->term && terminal->term->is_open()) {
+            terminal->term->blink(terminal->cursor_visible);
+        }
     }
 }
 
@@ -982,6 +1075,10 @@ void SSHTerminal::history_save_cb(lv_timer_t* timer)
 
 void SSHTerminal::navigate_history(int direction)
 {
+    if (raw_keys()) {
+        term_key(direction > 0 ? TermScreen::Key::Up : TermScreen::Key::Down);
+        return;
+    }
     if (wizard_active()) {
         // In a menu, trackball left/right cycles the choices instead of history
         wizard_cycle_choice(direction);
@@ -1014,6 +1111,10 @@ void SSHTerminal::navigate_history(int direction)
 
 void SSHTerminal::move_cursor_left()
 {
+    if (raw_keys()) {
+        term_key(TermScreen::Key::Left);
+        return;
+    }
     if (cursor_pos > 0) {
         cursor_pos--;
         cursor_visible = true;
@@ -1023,6 +1124,10 @@ void SSHTerminal::move_cursor_left()
 
 void SSHTerminal::move_cursor_right()
 {
+    if (raw_keys()) {
+        term_key(TermScreen::Key::Right);
+        return;
+    }
     if (cursor_pos < current_input.length()) {
         cursor_pos++;
         cursor_visible = true;
@@ -1032,6 +1137,10 @@ void SSHTerminal::move_cursor_right()
 
 void SSHTerminal::move_cursor_home()
 {
+    if (raw_keys()) {
+        term_key(TermScreen::Key::Home);
+        return;
+    }
     cursor_pos = 0;
     cursor_visible = true;
     update_input_display();
@@ -1039,6 +1148,10 @@ void SSHTerminal::move_cursor_home()
 
 void SSHTerminal::move_cursor_end()
 {
+    if (raw_keys()) {
+        term_key(TermScreen::Key::End);
+        return;
+    }
     cursor_pos = current_input.length();
     cursor_visible = true;
     update_input_display();
@@ -1046,6 +1159,10 @@ void SSHTerminal::move_cursor_end()
 
 void SSHTerminal::delete_at_cursor()
 {
+    if (raw_keys()) {
+        term_key(TermScreen::Key::Delete);
+        return;
+    }
     if (cursor_pos < current_input.length()) {
         current_input.erase(cursor_pos, 1);
         cursor_visible = true;
@@ -1399,6 +1516,18 @@ esp_err_t SSHTerminal::ssh_finish()
     if (t.use_key) {
         err = ssh_authenticate_pubkey(t.username.c_str(), t.key_data, t.key_len,
                                       t.passphrase.empty() ? NULL : t.passphrase.c_str());
+        if (err == ESP_ERR_INVALID_ARG && t.passphrase_prompts < 3) {
+            // The key is locked: ask for its passphrase and try again on this connection
+            append_text(t.passphrase.empty() ? "The key can't be read without its passphrase.\n" : "Wrong passphrase.\n");
+            vault::wipe(t.passphrase);
+            t.passphrase_prompts++;
+            wizard_reset();
+            wizard_goto(WizardStep::SshKeyPassphrase);
+            return ESP_OK;
+        }
+        if (err == ESP_ERR_INVALID_ARG) {
+            append_text("ERROR: Could not read the key - wrong passphrase, or not an RSA key in PEM format\n");
+        }
     } else {
         err = ssh_authenticate(t.username.c_str(), t.password.c_str());
     }
@@ -1419,6 +1548,7 @@ esp_err_t SSHTerminal::ssh_finish()
 
     append_text("SSH channel opened - connected!\n");
     ssh_connected = true;
+    show_term_view(true);
     update_status_bar();
 
     xTaskCreate(ssh_receive_task, "ssh_rx", 8192, this, 5, NULL);
@@ -1465,8 +1595,13 @@ esp_err_t SSHTerminal::ssh_authenticate_pubkey(const char* username, const char*
     if (rc) {
         ESP_LOGE(TAG, "Public key authentication failed: %d", rc);
         if (rc == LIBSSH2_ERROR_FILE) {
-            append_text(passphrase ? "ERROR: Could not decrypt key - wrong passphrase or unsupported cipher\n"
-                                   : "ERROR: Could not read key (passphrase needed or unsupported format)\n");
+            // Searched in place: the key is not copied
+            if (std::string_view(privkey_data, privkey_len).find("OPENSSH PRIVATE KEY") != std::string_view::npos) {
+                append_text("ERROR: This key is in OpenSSH format, which isn't supported. Convert it\n"
+                            "on your computer (keeps the passphrase): ssh-keygen -p -m PEM -f KEYFILE\n");
+                return ESP_FAIL;
+            }
+            return ESP_ERR_INVALID_ARG;   // Locked (needs a passphrase) or the passphrase is wrong
         }
         return ESP_FAIL;
     }
@@ -1488,8 +1623,12 @@ esp_err_t SSHTerminal::ssh_open_channel()
         return ESP_FAIL;
     }
 
+    // A full-screen terminal is an xterm with 256 colors; the T-Deck's scrolling text a plain vt100
+    const char* term_type = term ? "xterm-256color" : "vt100";
+    const int cols = term ? term->cols() : pty_cols;
+    const int rows = term ? term->rows() : pty_rows;
     waits = 0;
-    while ((rc = libssh2_channel_request_pty_ex(channel, "vt100", 5, NULL, 0, pty_cols, pty_rows, 0, 0)) ==
+    while ((rc = libssh2_channel_request_pty_ex(channel, term_type, strlen(term_type), NULL, 0, cols, rows, 0, 0)) ==
                LIBSSH2_ERROR_EAGAIN &&
            (waitsocket(ssh_socket, session) > 0 || ++waits < SSH_MAX_WAITS)) {
     }
@@ -1677,6 +1816,18 @@ std::string SSHTerminal::strip_ansi_codes(const char* data, size_t len)
 void SSHTerminal::process_received_data(const char* data, size_t len)
 {
     bytes_received += len;
+
+    if (term) {
+        // Full-screen terminal: LVGL draws from its cells, so they change under the display lock
+        std::string reply;
+        bsp_display_lock(0);
+        term->feed(data, len, reply);
+        bsp_display_unlock();
+        if (!reply.empty()) {
+            write_channel(reply.data(), reply.size());   // Answers to the program's queries
+        }
+        return;
+    }
     
     std::string cleaned = strip_ansi_codes(data, len);
     text_buffer += cleaned;
@@ -1864,7 +2015,9 @@ void SSHTerminal::send_special_key(const char* sequence)
     }
     
     if (strcmp(sequence, "CLEAR") == 0) {
-        if (chat_active) {
+        if (raw_keys()) {
+            write_channel("\x0c", 1);   // Ctrl+L: the shell or program redraws a clean screen
+        } else if (chat_active) {
             chat_clear();
         } else {
             clear_terminal();

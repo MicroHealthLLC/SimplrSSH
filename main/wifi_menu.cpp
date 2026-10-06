@@ -338,6 +338,7 @@ bool SSHTerminal::wifi_auto_connect(bool quiet)
             std::vector<WifiScanResult> list = wizard.scan;
             wizard_reset();
             attempt(list);
+            go_home();   // Unlocked and connected (or not): back to the menu
         });
         return false;
     }
@@ -369,6 +370,8 @@ void SSHTerminal::wifi_maintain()
     if (!wifi_auto_connect(true)) {
         wifi_retry_delay_s = wifi_retry_delay_s ? std::min(wifi_retry_delay_s * 2, 300) : 30;
         wifi_next_retry_ms = esp_timer_get_time() / 1000 + wifi_retry_delay_s * 1000;
+    } else if (!chat_active) {
+        go_home();   // Reconnected: the menu, with WiFi now on
     }
 }
 

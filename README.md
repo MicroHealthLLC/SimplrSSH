@@ -60,7 +60,8 @@ anywhere.
 ```
 
 1. **WiFi**: choose **1) WiFi** → **Scan and connect**, pick your network and type the
-   password. It is saved, and the device reconnects on its own from then on.
+   password. It is saved, the menu comes back, and the device reconnects on its own from then
+   on (after a restart too, also when it first asks for your PIN).
 2. **Add a server**: choose **2) SSH servers** → **Add**. Enter a name, host, port (Enter for
    22) and username, then choose a password or an SSH key. Finish with **Save and connect**.
 3. **Trust the server**: on the first connection you are shown the server's key fingerprint.
@@ -74,10 +75,14 @@ Saved passwords are encrypted on the device. For extra protection, set a PIN und
 1. On your computer, create a key: `ssh-keygen -t rsa -b 4096 -m PEM -f mykey`
 2. Add it to the server: `ssh-copy-id -i mykey.pub user@server`
 3. Copy `mykey` to the SD card as `/ssh_keys/mykey.pem`, and insert the card.
-4. Pick the key when you add a server.
+4. Pick the key when you add a server. If the key has a passphrase, type it when asked (it is
+   saved encrypted), or press Enter if it has none. If a key needs a passphrase you didn't
+   save, SimplrSSH asks for it when you connect.
 
-Keys must be RSA in PEM format. If you add a card while the device is running, type
-`storage keys` to load them.
+Keys must be RSA in PEM format (the file starts with `-----BEGIN RSA PRIVATE KEY-----`). A key
+starting with `-----BEGIN OPENSSH PRIVATE KEY-----` can be converted on your computer, keeping
+its passphrase: `ssh-keygen -p -m PEM -f mykey`. If you add a card while the device is running,
+type `storage keys` to load them.
 
 ### Optional: ChatGPT
 
@@ -88,14 +93,16 @@ OpenAI, and only while you use ChatGPT.
 ## Use
 
 - **Connect**: go to **2) SSH servers** → **Connect** and pick a server. Once you are
-  connected, everything you type goes to the server.
+  connected, everything you type goes to the server. On the Tab5 the session fills the screen
+  as a full terminal (see below).
 - **Scroll**: roll the trackball up or down (Tab5: Sym+Up / Sym+Down), or drag on the screen.
   Works everywhere: SSH, menus and ChatGPT. While you are scrolled back, new output doesn't
   move the screen; scroll back to the bottom or start typing to follow it again.
 - **Special keys**: swipe left to open a panel with Ctrl+C, Ctrl+D, Ctrl+Z, Tab and Esc. On
   the Tab5 keyboard just press them: Ctrl+letter, Tab and Esc go straight to the server.
 - **History**: roll the trackball left (older) or right (newer). Tab5: Up / Down.
-- **Disconnect**: type `exit` to return to the menu.
+- **Disconnect**: type `exit` to return to the menu (on the Tab5 this ends the shell on the
+  server). The side panel's **Exit SSH** also disconnects.
 - **ChatGPT**: type to chat, or hold the trackball (Tab5: hold Ctrl) to speak and let
   go to send. Start talking
   once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
@@ -104,8 +111,17 @@ OpenAI, and only while you use ChatGPT.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
 - **Help**: type `help` to list all commands.
 
-Full-screen live tools such as `htop` or `watch` are hard to use, since input is sent a line
-at a time. Use one-shot commands instead, for example `top -n 1`.
+**T-Deck**: full-screen live tools such as `htop` or `watch` are hard to use, since input is
+sent a line at a time. Use one-shot commands instead, for example `top -n 1`.
+
+**Tab5**: full-screen programs work - `vim`, `nano`, `htop`, `top`, `less`, `man`, `tmux`, `mc`
+and the like. The SSH session is a color terminal of about 116 x 31 characters
+(`xterm-256color`) with frames and line drawing, and every key goes straight to the server, so
+the shell's own history, completion and editing work as on a computer. Drag on the screen or
+press Sym+Up / Sym+Down to scroll back through the last 1000 lines of output. Inside a
+full-screen program, dragging scrolls the program itself (as a mouse wheel if it uses the mouse,
+for example `less`, `htop`, or `tmux` with `set -g mouse on`, otherwise as arrow keys), and
+Sym+Up / Sym+Down are Page Up / Page Down.
 
 ### Tab5 keyboard
 
@@ -119,6 +135,16 @@ at a time. Use one-shot commands instead, for example `top -n 1`.
 | Sym + key | The key's second symbol (`?` `/` `<` `>` `{` `}` `\|` `~` `:` `"` `=` `,`) |
 | Ctrl + letter | Control code to the server (Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L ...) |
 | Ctrl (hold on its own) | Talk to ChatGPT while held; held for a second elsewhere, deletes the shown history entry |
+
+In an SSH session the keys go to the server:
+
+| Keys | Sends |
+|---|---|
+| Arrows | Arrow keys. Sym+Left / Sym+Right: Home / End |
+| Sym+Up / Sym+Down | Scroll back through the output; Page Up / Page Down in a full-screen program (dragging on the screen scrolls too) |
+| Sym+1 ... Sym+0, Sym+-, Sym++ | F1 ... F10, F11, F12 (for example F10 quits `htop`) |
+| Alt + key | The key with Alt (Meta), for programs that use it |
+| Enter, Backspace, Tab, Esc, Del, Ctrl + letter | As on a computer |
 
 Held keys repeat. The keyboard can be attached or removed while SimplrSSH runs, and the Tab5
 charges its battery over USB-C while SimplrSSH runs.

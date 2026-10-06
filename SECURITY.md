@@ -132,6 +132,14 @@ built from the same sources; only the board layer differs (`main/board_tab5.cpp`
 
 Hardware behaviour on the Tab5 has not been confirmed on a device yet.
 
+### Tab5 full-screen terminal, key passphrases (2026-10-06)
+
+| Change | Security review |
+|---|---|
+| The Tab5 shows SSH sessions in a terminal emulator (`main/vterm.cpp`, xterm subset) and asks the server for an `xterm-256color` pty. The T-Deck is unchanged (escape codes stripped, line input) | Server output is untrusted input to a parser: numeric parameters are capped (9999) and clamped to the screen, at most 16 parameters are kept, title/device strings are skipped without being stored, and the cell arrays are allocated once at start-up (no growth from input). Host tests include hostile parameters and 200,000 random bytes under AddressSanitizer/UBSan. The emulator answers only cursor-position, device-type and screen-size queries (bounded to 256 bytes per chunk); it never reports titles, clipboard or anything typed. Of mouse reporting only the wheel is sent (when the program enables it and the user drags on the screen); clipboard (OSC 52) and title reporting are not implemented. On-screen text, including scrollback (1000 lines, PSRAM), is not logged or saved |
+| Every key goes to the server while connected on the Tab5 (Alt sends Esc + key) | Same data as typing a line on the T-Deck; nothing typed into the session is logged or kept in command history |
+| Key passphrase offered for every key; if a key turns out to be locked when connecting, the passphrase is asked on the open connection (3 tries) | Masked like every secret, held in the pending-connection record and wiped after the attempt; never logged. The host key is verified before it is asked. Keys in OpenSSH format (unsupported by libssh2 with mbed TLS) are reported with a conversion hint instead of a passphrase prompt |
+
 ### Known residual risks
 
 - Flash is not encrypted. Non-secret data (profiles, known hosts, command history, SD keys while

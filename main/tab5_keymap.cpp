@@ -70,6 +70,7 @@ uint32_t Tab5Keymap::translate(int row, int col, bool* repeats)
     if (at(row, col, 4, 11)) { return KEY_EVENT | (sym ? INPUT_DOWN : INPUT_RIGHT); }   // Down
     if (at(row, col, 4, 10)) { return KEY_EVENT | (sym ? INPUT_CURSOR_HOME : INPUT_CURSOR_LEFT); }
     if (at(row, col, 4, 12)) { return KEY_EVENT | (sym ? INPUT_CURSOR_END : INPUT_CURSOR_RIGHT); }
+    if (sym && row == 0 && col >= 1 && col <= 12) { *repeats = false; return KEY_EVENT | (INPUT_F1 + col - 1); }
 
     char c = (sym && SYM[row][col]) ? SYM[row][col] : BASE[row][col];
     if (c >= 'a' && c <= 'z') {
@@ -132,7 +133,8 @@ void Tab5Keymap::key_event(bool pressed, int row, int col, uint32_t now_ms)
         return;
     }
     if (is_alt(row, col)) {
-        return;   // No meaning for a line-based terminal
+        alt = pressed;
+        return;
     }
     if (is_aa(row, col)) {
         if (pressed) {
@@ -171,6 +173,9 @@ void Tab5Keymap::key_event(bool pressed, int row, int col, uint32_t now_ms)
     }
     bool repeats = false;
     uint32_t value = translate(row, col, &repeats);
+    if (alt && value && !(value & KEY_EVENT)) {
+        value |= KEY_ALT;
+    }
     one_shot = false;
     push(value);
     if (value && repeats) {
@@ -199,7 +204,7 @@ void Tab5Keymap::reset()
     if (talk_holding) {
         push(KEY_EVENT | INPUT_HOLD_END);   // Stop a recording in progress
     }
-    sym = ctrl = aa_down = aa_used = one_shot = caps_lock = false;
+    sym = ctrl = alt = aa_down = aa_used = one_shot = caps_lock = false;
     talk_down = talk_holding = talk_used = false;
     repeat_key = -1;
 }

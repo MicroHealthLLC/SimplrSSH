@@ -17,7 +17,9 @@ This file is the single source of rules for every AI assistant and contributor.
 edit this file only, and never replace the link with a copy (test/guards/test_rules_file.py).
 
 UI model: a home menu (numbered, `menu` anywhere, `exit` back to it), each app a numbered
-menu of short prompts; the screen is edge-to-edge text (no borders or decoration).
+menu of short prompts; the screen is edge-to-edge text (no borders or decoration). SSH sessions:
+on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-screen xterm
+(TUI programs) with every key sent to the server. Keep the T-Deck's terminal as it is.
 
 ## Scope: keep it lean
 
@@ -47,7 +49,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   `bsp_display_lock()` and check `chat_generation` so a closed view is never used.
 - Audio (I2S mic/speaker) is started only while used; recordings go to PSRAM.
 - Bound every collection that grows from user or network input (history 100, profiles 20,
-  networks 20, SD keys 8 / 48 KB, terminal text ~6 KB).
+  networks 20, SD keys 8 / 48 KB, terminal text ~6 KB, Tab5 SSH scrollback 1000 lines in PSRAM).
 - Avoid heap churn in hot paths (SSH receive/render loop): reuse buffers, don't build
   temporary strings per byte.
 
@@ -143,6 +145,7 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
 | `main/board_tdeck.cpp`, `main/board_tab5.cpp` | Board layer (`board.hpp`): power, display, touch, keyboard, UI metrics, hints |
 | `main/tab5_keyboard.cpp`, `main/tab5_keymap.cpp` | Tab5 Keyboard: I2C driver; key map (host-tested) |
 | `main/ssh_terminal.cpp`, `main/command_redact.cpp` | Terminal UI, command parsing, WiFi driver, SSH connection; password redaction |
+| `main/vterm.cpp`, `main/term_view.cpp`, `main/font_term_mono_18.c` | Tab5 full-screen SSH terminal (`term_screen.hpp`, `board::term_screen()`; NULL on the T-Deck): xterm emulator (host-tested); LVGL grid view; its monospace font |
 | `main/known_hosts.cpp` | Host key verification (TOFU), `hosts` command |
 | `main/profile_menu.cpp` | Menu/wizard plumbing, SSH profiles |
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |

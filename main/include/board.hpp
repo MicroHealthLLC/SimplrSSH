@@ -14,6 +14,8 @@
 #include "input_events.hpp"
 #include <cstdint>
 
+class TermScreen;
+
 namespace board
 {
     extern const char* const NAME;          // "T-Deck" or "Tab5", for messages
@@ -44,6 +46,10 @@ namespace board
         int32_t gap;                  // Small padding (chat bubbles, panel)
     };
     const Ui& ui();
+
+    // Full-screen terminal for SSH sessions (term_screen.hpp), or NULL: SSH output scrolls as
+    // text and lines are sent with Enter (T-Deck)
+    TermScreen* term_screen();
 
     // Words for the help texts: how to talk to ChatGPT, scroll, and recall history
     extern const char* const HINT_TALK;     // e.g. "hold the trackball"

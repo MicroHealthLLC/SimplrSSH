@@ -32,6 +32,9 @@ void SSHTerminal::show_menu_after(WizardStep menu)
 
 void SSHTerminal::background_tick()
 {
+    if (!ssh_connected) {
+        show_term_view(false);   // The session ended (by the server or the side panel)
+    }
     if (home_pending) {
         home_pending = false;
         go_home();

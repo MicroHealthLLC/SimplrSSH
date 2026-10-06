@@ -19,6 +19,7 @@
 #include "battery_measurement.hpp"
 #include "connection_profiles.hpp"
 #include "openai_client.hpp"
+#include "term_screen.hpp"
 
 class SSHTerminal
 {
@@ -47,6 +48,9 @@ public:
     void move_cursor_home();
     void move_cursor_end();
     void delete_at_cursor();   // Forward delete (a full keyboard's Del key)
+    // Tab5 keyboard: F1-F12 (0-11) and Alt+key, for programs in the full-screen SSH terminal
+    void function_key(int n);
+    void alt_key(char key);
     
     esp_err_t init_wifi(const char* ssid, const char* password);
     void disconnect_wifi();
@@ -85,6 +89,8 @@ private:
         VaultUnlock, VaultOldPin, VaultNewPin, VaultConfirmPin, VaultConfirmReset,
         // SSH host key trust (known_hosts.cpp)
         HostTrust, HostConfirmForget,
+        // A key that turned out to need its passphrase, asked on the open connection
+        SshKeyPassphrase,
         // Storage / SD card backup (storage_menu.cpp)
         StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase,
         // Home and security menus (home_menu.cpp)
@@ -110,6 +116,7 @@ private:
         const char* key_data = NULL;   // Points into loaded_keys (stable while connected)
         size_t key_len = 0;
         std::string passphrase;        // Key passphrase, empty if none
+        int passphrase_prompts = 0;    // Times the passphrase was asked on this connection
         std::string fingerprint;       // "SHA256:..." of the server host key
         std::string key_type;
     };
@@ -211,6 +218,13 @@ private:
     int pty_cols = 80;                 // Terminal size reported to SSH servers
     int pty_rows = 24;
     bool wifi_quiet_connect = false;   // Background reconnect: no progress dots
+
+    // Full-screen SSH terminal (board::term_screen(), NULL on the T-Deck): shown while SSH is
+    // connected; then every key goes to the server (raw_keys())
+    TermScreen* term = NULL;
+    bool raw_keys() const;
+    void term_key(TermScreen::Key key);
+    void show_term_view(bool show);
     
     // Scrolling: a view follows new text only while it shows the newest line, so text
     // the user scrolled back to (trackball or touch drag) stays put while output arrives
@@ -267,6 +281,8 @@ private:
     void list_profiles();
     int find_profile(const std::string& ref);
     bool key_is_encrypted(const std::string& key_name);
+    bool key_is_openssh_format(const std::string& key_name);
+    bool wizard_holds_connection() const;
     std::string profile_summary(const ConnectionProfile& p, bool secret_saved);
     void begin_profile_action(WizardAction action, const std::string& ref);
     void on_profile_picked(int index);
