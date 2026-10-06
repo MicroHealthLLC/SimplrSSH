@@ -1,7 +1,7 @@
 /*
  * ChatGPT App
  * One chat session with an OpenAI model: your messages right-aligned, replies
- * left-aligned, the input line at the bottom. Hold the trackball (Tab5: Ctrl+Space) to talk
+ * left-aligned, the input line at the bottom. Hold the trackball (Tab5: Ctrl) to talk
  * (Whisper), optionally hear the reply (TTS). Network and audio work runs in a
  * short-lived worker task, so the screen and keyboard stay responsive.
  *

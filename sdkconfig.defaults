@@ -12,6 +12,16 @@ CONFIG_LWIP_IPV6=n
 # libssh2 protocol tracing is never used in production and could log session data
 CONFIG_LIBSSH2_DEBUG_ENABLE=n
 
+# --- Build and boot (both boards) ---------------------------------------------
+# app_main mounts the SD card, starts the display and touch and builds the terminal screen
+# before handing over to keypad_task; the 3.5 KB default overflows. Freed when it returns.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+# Optimize for speed (TLS, SSH crypto, rendering); assertions compiled out
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_DISABLE=y
+# Problems only in the log (AI_RULES.md: ESP_LOGI sparingly)
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
 # --- Internal RAM: move bulk buffers to PSRAM --------------------------------
 # WiFi/LWIP buffers in PSRAM when possible
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

@@ -3,14 +3,14 @@
  * Turns the Tab5 Keyboard's raw key presses and releases (row 0-4, column 0-13) into
  * SimplrSSH keys (input_events.hpp). The keyboard firmware reports only positions; this does
  * the legends, the Sym layer, Aa (hold = shift, tap = one capital, double tap = caps lock),
- * Ctrl codes, auto-repeat and Ctrl+Space push-to-talk. No ESP-IDF headers: tested on the host.
+ * Ctrl codes, auto-repeat and Ctrl push-to-talk. No ESP-IDF headers: tested on the host.
  *
  *   Up / Down             older / newer command, previous / next menu choice
  *   Left / Right          move the cursor; Sym+Left / Sym+Right: start / end of the line
  *   Sym+Up / Sym+Down     scroll the screen
  *   Del                   delete at the cursor
  *   Ctrl+letter           control code (Ctrl+C = 3 ...), also Ctrl+[ \ ] ^ _ /
- *   Ctrl+Space (hold)     push-to-talk in ChatGPT; held 1 s elsewhere: delete history entry
+ *   Ctrl (hold alone)     push-to-talk in ChatGPT; held 1 s elsewhere: delete history entry
  */
 
 #ifndef TAB5_KEYMAP_HPP
@@ -54,7 +54,8 @@ private:
     uint32_t repeat_value = 0;
     uint32_t repeat_next_ms = 0;
 
-    bool talk_down = false;        // Ctrl+Space held
+    bool talk_down = false;        // Ctrl held, no other key pressed before HOLD_MS
+    bool talk_used = false;        // Another key pressed while talking
     bool talk_holding = false;     // HOLD_START sent
     uint32_t talk_pressed_ms = 0;
 
