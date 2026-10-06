@@ -842,6 +842,8 @@ void SSHTerminal::execute_command(const std::string& cmd)
         append_text((std::string("  sleep - Screen and WiFi off until ") + board::HINT_WAKE + "\n").c_str());
         append_text("  shutdown - Turn the device off (also 'poweroff'; 'power' menu)\n");
         append_text("  exit - Disconnect SSH\n");
+        append_text("  Ctrl+Del (Tab5) or the side panel's Menu (swipe left): back to the menu\n"
+                    "    from anywhere - ends SSH, closes ChatGPT\n");
         append_text("  clear - Clear terminal\n");
         append_text("  help - Show this help\n");
         append_text((std::string(board::HINT_SCROLL) + " " + board::HINT_HISTORY + "\n").c_str());
@@ -2096,7 +2098,7 @@ void SSHTerminal::create_side_panel()
     create_key_button("Ctrl+L", "\x0C");
     create_key_button("Tab", "\t");
     create_key_button("Esc", "\x1B");
-    create_key_button("Exit SSH", "EXIT");
+    create_key_button("Menu", "MENU");   // Back to the home menu from anywhere (ends SSH)
     create_key_button("Clear", "CLEAR");
 }
 
@@ -2120,10 +2122,9 @@ void SSHTerminal::send_special_key(const char* sequence)
         return;
     }
     
-    if (strcmp(sequence, "EXIT") == 0) {
-        disconnect();
-        home_pending = true;
+    if (strcmp(sequence, "MENU") == 0) {
         toggle_side_panel();
+        leave_to_home();
         return;
     }
     

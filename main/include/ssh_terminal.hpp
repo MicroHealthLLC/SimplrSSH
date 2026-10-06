@@ -64,6 +64,9 @@ public:
     void on_trackball_hold(bool start, bool long_press);
     // Shows the home menu (startup, 'menu', 'exit')
     void go_home();
+    // Ctrl+Del (Tab5) and the side panel's Menu button: from any screen, ends an SSH session,
+    // closes ChatGPT (stopping recording, a reply or speech) or cancels a menu, then go_home()
+    void leave_to_home();
     // Boot message listing what was restored from the device's storage
     void print_saved_summary();
     

@@ -16,7 +16,8 @@ This file is the single source of rules for every AI assistant and contributor.
 `CLAUDE.md` is a symbolic link to it (so Claude Code loads it) and `AGENTS.md` points here:
 edit this file only, and never replace the link with a copy (test/guards/test_rules_file.py).
 
-UI model: a home menu (numbered, `menu` anywhere, `exit` back to it), each app a numbered
+UI model: a home menu (numbered, `menu` anywhere, `exit` back to it; Ctrl+Del on the Tab5 and
+the side panel's Menu button return to it from any screen, ending SSH or ChatGPT), each app a numbered
 menu of short prompts; the screen is edge-to-edge text (no borders or decoration). SSH sessions:
 on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-screen xterm
 (TUI programs) with every key sent to the server. Keep the T-Deck's terminal as it is.

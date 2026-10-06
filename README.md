@@ -48,7 +48,9 @@ a Tab5, hold its reset button for about 2 seconds, until the green LED flashes q
 
 The device starts at the home menu. Type a number and press Enter, or roll the trackball
 left/right (Tab5: Up/Down) to pick and press it. `0` goes back, and `menu` returns home from
-anywhere.
+anywhere. To leave an app from any screen - even an SSH session or ChatGPT, where what you
+type goes to the server or the chat - press **Ctrl+Del** on the Tab5 keyboard, or swipe left
+and tap **Menu** (the T-Deck's keyboard has no Ctrl key).
 
 ```
 == SimplrSSH ==
@@ -103,7 +105,10 @@ OpenAI, and only while you use ChatGPT.
   the Tab5 keyboard just press them: Ctrl+letter, Tab and Esc go straight to the server.
 - **History**: roll the trackball left (older) or right (newer). Tab5: Up / Down.
 - **Disconnect**: type `exit` to return to the menu (on the Tab5 this ends the shell on the
-  server). The side panel's **Exit SSH** also disconnects.
+  server).
+- **Back to the menu from anywhere**: **Ctrl+Del** (Tab5), or swipe left and tap **Menu**
+  (both boards). It ends an SSH session, closes ChatGPT (stopping a recording, reply or
+  speech) or cancels a menu, clears the input line, and shows the home menu.
 - **ChatGPT**: type to chat, or hold the trackball (Tab5: hold Ctrl) to speak and let
   go to send. Start talking
   once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
@@ -144,6 +149,7 @@ Sym+Up / Sym+Down are Page Up / Page Down.
 | Left / Right | Move the cursor. Sym+Left / Sym+Right: start / end of the line |
 | Sym+Up / Sym+Down | Scroll the screen |
 | Del | Delete the character at the cursor |
+| Ctrl+Del | Back to the home menu from any screen: ends an SSH session, closes ChatGPT |
 | Aa | Hold for capitals; tap for one capital; tap twice for caps lock |
 | Sym + key | The key's second symbol (`?` `/` `<` `>` `{` `}` `\|` `~` `:` `"` `=` `,`) |
 | Ctrl + letter | Control code to the server (Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L ...) |
@@ -158,6 +164,7 @@ In an SSH session the keys go to the server:
 | Sym+1 ... Sym+0, Sym+-, Sym++ | F1 ... F10, F11, F12 (for example F10 quits `htop`) |
 | Alt + key | The key with Alt (Meta), for programs that use it |
 | Enter, Backspace, Tab, Esc, Del, Ctrl + letter | As on a computer |
+| Ctrl+Del | Not sent: ends the session and returns to the home menu |
 
 Held keys repeat. The keyboard can be attached or removed while SimplrSSH runs, and the Tab5
 charges its battery over USB-C while SimplrSSH runs.

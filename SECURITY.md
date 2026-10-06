@@ -146,6 +146,12 @@ Hardware behaviour on the Tab5 has not been confirmed on a device yet.
 |---|---|
 | `sleep` / `shutdown` (home menu **6) Power**) turn the screen and WiFi off, or the device off (Tab5: power-off pulses on IO expander 0x44 P4; T-Deck: peripheral power off and deep sleep, woken by the trackball) | No new network use: WiFi is stopped while asleep and rejoins only a saved network on waking, as at boot. Sleep and power off are refused while an SSH session is open (there `sleep` and `shutdown` are sent to the server, so a server command is never taken as a local one); an open ChatGPT view is closed first, which cancels its request. With a PIN, sleeping locks the vault, so saved passwords need the PIN again after waking; without a PIN nothing changes. Unsaved command history (which never holds secrets) is saved before power off. The touch that wakes the device is absorbed by a full-screen layer, so it can't press a button on the dark screen |
 
+### Back to the menu from anywhere (2026-10-06)
+
+| Change | Security review |
+|---|---|
+| Ctrl+Del (Tab5) and the side panel's **Menu** button (replaces **Exit SSH**) end an SSH session, close ChatGPT or cancel a menu from any screen | Ctrl+Del is handled on the device and never sent to the server. The half-typed input line is wiped (`vault::wipe`), as it may hold a password; a connection waiting for host-key trust or a passphrase is torn down like Cancel, wiping its pending credentials |
+
 ### Known residual risks
 
 - Flash is not encrypted. Non-secret data (profiles, known hosts, command history, SD keys while

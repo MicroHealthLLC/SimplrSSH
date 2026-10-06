@@ -54,6 +54,7 @@ static void handle_input_event(uint8_t event)
         case board::INPUT_CURSOR_HOME:   ssh_terminal->move_cursor_home(); break;
         case board::INPUT_CURSOR_END:    ssh_terminal->move_cursor_end(); break;
         case board::INPUT_DELETE:        ssh_terminal->delete_at_cursor(); break;
+        case board::INPUT_GO_HOME:       ssh_terminal->leave_to_home(); break;   // Ctrl+Del (Tab5)
         default:
             if (event >= board::INPUT_F1 && event <= board::INPUT_F12) {
                 ssh_terminal->function_key(event - board::INPUT_F1);

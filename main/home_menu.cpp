@@ -24,6 +24,22 @@ void SSHTerminal::go_home()
     wizard_goto(WizardStep::HomeMenu);
 }
 
+void SSHTerminal::leave_to_home()
+{
+    vault::wipe(current_input);   // A half-typed line may be a password
+    cursor_pos = 0;
+    history_index = -1;
+    if (chat_active) {
+        close_chat();
+    }
+    if (session || ssh_socket >= 0) {
+        disconnect();             // Also a connection waiting for trust or a passphrase
+    }
+    append_text("\nBack to the menu.\n");
+    go_home();
+    update_input_display();
+}
+
 // After a command started from a menu: return to that menu when it finishes
 void SSHTerminal::show_menu_after(WizardStep menu)
 {
