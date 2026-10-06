@@ -30,6 +30,7 @@ const char* const board::NAME = "T-Deck";
 const char* const board::HINT_TALK = "hold the trackball";
 const char* const board::HINT_SCROLL = "Trackball up/down or drag: scroll.";
 const char* const board::HINT_HISTORY = "Left/right: history.";
+const char* const board::HINT_STOP = "Esc (swipe left)";
 const char* const board::SCREEN_DESC = "a tiny handheld with a 320x240 text screen";
 
 static C3Keyboard* s_keyboard = NULL;

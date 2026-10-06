@@ -30,6 +30,8 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <cerrno>
 #include <sys/select.h>
 
 static const char *TAG = "SSH_TERMINAL";
@@ -898,6 +900,8 @@ void SSHTerminal::handle_key_input(char key)
             ssh_teardown();
         }
         go_home();
+    } else if (chat_active && key == 27) {
+        chat_stop();   // Esc stops recording, the reply or speech
     } else if (chat_active && (key == '\n' || key == '\r')) {
         std::string text = current_input;
         vault::wipe(current_input);
@@ -1338,6 +1342,71 @@ static esp_err_t resolve_host(const char* host, struct in_addr* addr)
     return ESP_OK;
 }
 
+// Opens a TCP connection, waiting at most timeout_s. Returns the socket (>= 0) or -errno.
+static int tcp_connect(const struct sockaddr_in& sin, int timeout_s)
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return -(errno ? errno : ENOMEM);
+    }
+    int flags = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+    int err = 0;
+    if (::connect(fd, (const struct sockaddr*)&sin, sizeof(sin)) != 0) {
+        err = errno;
+        if (err == EINPROGRESS) {
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            struct timeval tv = {timeout_s, 0};
+            int rc = select(fd + 1, NULL, &wfds, NULL, &tv);
+            if (rc == 0) {
+                err = ETIMEDOUT;
+            } else if (rc < 0) {
+                err = errno;
+            } else {
+                socklen_t len = sizeof(err);
+                if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) != 0) {
+                    err = errno;
+                }
+            }
+        }
+    }
+    if (err) {
+        close(fd);
+        return -err;
+    }
+    fcntl(fd, F_SETFL, flags);   // Back to blocking; libssh2 sets its own mode
+    struct timeval timeout = {10, 0};
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    return fd;
+}
+
+// What a failed connection means, for the user
+static std::string connect_error_text(int err)
+{
+    switch (err) {
+        case ECONNREFUSED:
+            return "connection refused - is SSH running on that port, or is the device blocked (e.g. fail2ban)?";
+        case ETIMEDOUT:
+            return "no answer in 10 s - check the address, and that the server is reachable from this WiFi";
+        case EHOSTUNREACH:
+        case ENETUNREACH:
+            return "no route to the server - check the address and the WiFi connection";
+        case ECONNRESET:
+        case ECONNABORTED:
+            return "the connection was reset";
+        case ENFILE:
+        case EMFILE:
+        case ENOMEM:
+        case ENOBUFS:
+            return "out of network resources - try again, or restart the device";
+        default:
+            return "error " + std::to_string(err) + " (" + strerror(err) + ")";
+    }
+}
+
 int SSHTerminal::waitsocket(int socket_fd, LIBSSH2_SESSION *session)
 {
     struct timeval timeout;
@@ -1427,7 +1496,6 @@ esp_err_t SSHTerminal::ssh_begin(PendingSsh&& target)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Connecting to %s:%d", t.host.c_str(), t.port);
     append_text(("Connecting to " + t.host + ":" + std::to_string(t.port) + "...\n").c_str());
     refresh_display_now();
 
@@ -1439,23 +1507,27 @@ esp_err_t SSHTerminal::ssh_begin(PendingSsh&& target)
         wipe_pending_ssh();
         return ESP_FAIL;
     }
+    char ip[16];
+    inet_ntoa_r(sin.sin_addr, ip, sizeof(ip));
+    if (t.host != ip) {
+        append_text(("  (" + t.host + " is " + ip + ")\n").c_str());   // Shows a name resolving wrongly
+    }
+    refresh_display_now();
 
-    ssh_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (ssh_socket < 0) {
-        append_text("ERROR: Failed to create socket\n");
+    // One retry for errors a freshly joined network can give (the route or ARP not ready yet)
+    int fd = tcp_connect(sin, 10);
+    if (fd == -EHOSTUNREACH || fd == -ENETUNREACH || fd == -ECONNRESET || fd == -ECONNABORTED) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        fd = tcp_connect(sin, 10);
+    }
+    if (fd < 0) {
+        ESP_LOGE(TAG, "TCP connect failed: errno %d", -fd);
+        append_text(("ERROR: Could not connect to " + std::string(ip) + ":" + std::to_string(t.port) + ": " +
+                     connect_error_text(-fd) + "\n").c_str());
         wipe_pending_ssh();
         return ESP_FAIL;
     }
-
-    struct timeval timeout = {10, 0};
-    setsockopt(ssh_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(ssh_socket, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
-
-    if (::connect(ssh_socket, (struct sockaddr*)(&sin), sizeof(sin)) != 0) {
-        append_text("ERROR: Failed to connect socket\n");
-        ssh_teardown();
-        return ESP_FAIL;
-    }
+    ssh_socket = fd;
 
     session = libssh2_session_init();
     if (!session) {
@@ -2026,6 +2098,12 @@ void SSHTerminal::send_special_key(const char* sequence)
         return;
     }
     
+    if (strcmp(sequence, "\x1B") == 0 && chat_active && !wizard_active()) {
+        chat_stop();
+        toggle_side_panel();
+        return;
+    }
+
     if (strcmp(sequence, "\x1B") == 0 && wizard_active()) {
         handle_key_input(27);
         toggle_side_panel();
