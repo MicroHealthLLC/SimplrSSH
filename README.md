@@ -96,7 +96,7 @@ OpenAI, and only while you use ChatGPT.
   the Tab5 keyboard just press them: Ctrl+letter, Tab and Esc go straight to the server.
 - **History**: roll the trackball left (older) or right (newer). Tab5: Up / Down.
 - **Disconnect**: type `exit` to return to the menu.
-- **ChatGPT**: type to chat, or hold the trackball (Tab5: hold Ctrl+Space) to speak and let
+- **ChatGPT**: type to chat, or hold the trackball (Tab5: hold Ctrl) to speak and let
   go to send. Start talking
   once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
   sent as your message to the chat model you picked. If the microphone picks up nothing, the
@@ -118,7 +118,7 @@ at a time. Use one-shot commands instead, for example `top -n 1`.
 | Aa | Hold for capitals; tap for one capital; tap twice for caps lock |
 | Sym + key | The key's second symbol (`?` `/` `<` `>` `{` `}` `\|` `~` `:` `"` `=` `,`) |
 | Ctrl + letter | Control code to the server (Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L ...) |
-| Ctrl+Space (hold) | Talk to ChatGPT; held for a second elsewhere, deletes the shown history entry |
+| Ctrl (hold on its own) | Talk to ChatGPT while held; held for a second elsewhere, deletes the shown history entry |
 
 Held keys repeat. The keyboard can be attached or removed while SimplrSSH runs, and the Tab5
 charges its battery over USB-C while SimplrSSH runs.

@@ -183,6 +183,13 @@ class SdkconfigDefaults(unittest.TestCase):
                 with self.subTest(sdkconfig=config, option=option):
                     self.assertEqual(committed[option], value, f"{config} overrides its defaults: update both")
 
+    def test_main_task_stack_fits_boot(self):
+        # app_main brings up SD, display, touch and the terminal screen: the 3.5 KB default
+        # overflowed on the Tab5 (black screen, reboot loop)
+        for config in BOARD_CONFIGS:
+            with self.subTest(sdkconfig=config):
+                self.assertGreaterEqual(int(repo.sdkconfig(config)["CONFIG_ESP_MAIN_TASK_STACK_SIZE"]), 12288)
+
     def test_tab5_sdkconfig_is_for_the_tab5(self):
         cfg = repo.sdkconfig("sdkconfig.tab5")
         self.assertEqual(cfg.get("CONFIG_IDF_TARGET"), '"esp32p4"')

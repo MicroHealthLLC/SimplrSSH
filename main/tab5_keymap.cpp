@@ -32,7 +32,6 @@ static bool is_sym(int r, int c) { return at(r, c, 3, 0); }
 static bool is_aa(int r, int c) { return at(r, c, 3, 1); }
 static bool is_ctrl(int r, int c) { return at(r, c, 4, 0); }
 static bool is_alt(int r, int c) { return at(r, c, 4, 1); }
-static bool is_space(int r, int c) { return at(r, c, 4, 13); }
 
 // a - b >= 0 for wrapping millisecond counters
 static bool reached(uint32_t now, uint32_t when)
@@ -101,12 +100,35 @@ void Tab5Keymap::key_event(bool pressed, int row, int col, uint32_t now_ms)
     if (row < 0 || row >= ROWS || col < 0 || col >= COLS) {
         return;
     }
-    if (is_sym(row, col)) {
-        sym = pressed;
-        return;
-    }
     if (is_ctrl(row, col)) {
         ctrl = pressed;
+        if (pressed) {
+            // Ctrl on its own is push-to-talk once held for HOLD_MS (tick)
+            talk_down = true;
+            talk_holding = false;
+            talk_used = false;
+            talk_pressed_ms = now_ms;
+        } else if (talk_down) {
+            talk_down = false;
+            if (talk_holding) {
+                talk_holding = false;
+                // A long hold deletes a history entry outside ChatGPT: only when Ctrl was alone
+                bool long_hold = !talk_used && now_ms - talk_pressed_ms >= LONG_HOLD_MS;
+                push(KEY_EVENT | (long_hold ? INPUT_HOLD_END_LONG : INPUT_HOLD_END));
+            }
+        }
+        return;
+    }
+    if (pressed && talk_down) {
+        // Another key with Ctrl: a control code (Ctrl+C ...), not talking
+        if (talk_holding) {
+            talk_used = true;
+        } else {
+            talk_down = false;
+        }
+    }
+    if (is_sym(row, col)) {
+        sym = pressed;
         return;
     }
     if (is_alt(row, col)) {
@@ -141,24 +163,11 @@ void Tab5Keymap::key_event(bool pressed, int row, int col, uint32_t now_ms)
         if (id == repeat_key) {
             repeat_key = -1;
         }
-        if (is_space(row, col) && talk_down) {
-            talk_down = false;
-            if (talk_holding) {
-                talk_holding = false;
-                push(KEY_EVENT | (now_ms - talk_pressed_ms >= LONG_HOLD_MS ? INPUT_HOLD_END_LONG : INPUT_HOLD_END));
-            }
-        }
         return;
     }
 
     if (aa_down) {
         aa_used = true;
-    }
-    if (is_space(row, col) && ctrl) {
-        talk_down = true;
-        talk_holding = false;
-        talk_pressed_ms = now_ms;
-        return;
     }
     bool repeats = false;
     uint32_t value = translate(row, col, &repeats);
@@ -191,6 +200,6 @@ void Tab5Keymap::reset()
         push(KEY_EVENT | INPUT_HOLD_END);   // Stop a recording in progress
     }
     sym = ctrl = aa_down = aa_used = one_shot = caps_lock = false;
-    talk_down = talk_holding = false;
+    talk_down = talk_holding = talk_used = false;
     repeat_key = -1;
 }

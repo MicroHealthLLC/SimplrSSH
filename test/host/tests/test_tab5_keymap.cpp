@@ -141,36 +141,50 @@ TEST(keymap_enter_and_esc_do_not_repeat)
     CHECK_EQ(k.pop(), 0u);
 }
 
-TEST(keymap_ctrl_space_is_push_to_talk)
+TEST(keymap_ctrl_hold_is_push_to_talk)
 {
     Tab5Keymap k;
     press(k, CTRL, 0);
-    press(k, SPACE, 0);
     CHECK_EQ(k.pop(), 0u);                                  // Nothing typed
     k.tick(Tab5Keymap::HOLD_MS);
     CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_START);
-    release(k, CTRL, 500);                                  // Ctrl may go first
-    release(k, SPACE, 800);
+    release(k, CTRL, 800);
     CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_END);
 
-    press(k, CTRL, 2000);
-    press(k, SPACE, 2000);
+    press(k, CTRL, 2000);                                   // Held a second: long hold
     k.tick(2000 + Tab5Keymap::HOLD_MS);
     CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_START);
-    release(k, SPACE, 2000 + Tab5Keymap::LONG_HOLD_MS);
+    release(k, CTRL, 2000 + Tab5Keymap::LONG_HOLD_MS);
     CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_END_LONG);
 
-    press(k, SPACE, 4000);                                  // Short Ctrl+Space: nothing
-    release(k, SPACE, 4100);
+    press(k, CTRL, 4000);                                   // Short tap of Ctrl: nothing
+    release(k, CTRL, 4100);
     k.tick(5000);
     CHECK_EQ(k.pop(), 0u);
+}
+
+TEST(keymap_ctrl_with_a_key_is_not_talking)
+{
+    Tab5Keymap k;
+    press(k, CTRL, 0);
+    CHECK_EQ(tap(k, C, 100), 3u);                           // Ctrl+C before the hold time
+    k.tick(5000);                                           // Ctrl still held, slowly let go
+    CHECK_EQ(k.pop(), 0u);
+    release(k, CTRL, 6000);
+    CHECK_EQ(k.pop(), 0u);
+
+    press(k, CTRL, 10000);                                  // Talking, then a key: no long hold
+    k.tick(10000 + Tab5Keymap::HOLD_MS);
+    CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_START);
+    CHECK_EQ(tap(k, C, 10500), 3u);
+    release(k, CTRL, 10000 + 2 * Tab5Keymap::LONG_HOLD_MS);
+    CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_END);
 }
 
 TEST(keymap_reset_stops_talking_and_modifiers)
 {
     Tab5Keymap k;
     press(k, CTRL, 0);
-    press(k, SPACE, 0);
     k.tick(Tab5Keymap::HOLD_MS);
     CHECK_EQ(k.pop(), KEY_EVENT | INPUT_HOLD_START);
     k.reset();                                              // Keyboard pulled off while talking

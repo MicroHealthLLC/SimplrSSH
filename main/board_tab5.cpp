@@ -21,16 +21,19 @@
 static const char *TAG = "board";
 
 const char* const board::NAME = "Tab5";
-const char* const board::HINT_TALK = "hold Ctrl+Space";
+const char* const board::HINT_TALK = "hold Ctrl";
 const char* const board::HINT_SCROLL = "Sym+Up/Down or drag: scroll.";
 const char* const board::HINT_HISTORY = "Up/Down: history.";
 const char* const board::SCREEN_DESC = "a 5-inch tablet with a 1280x720 text screen";
 
 // IO expander pins (M5Stack Tab5 pin map)
+static const uint32_t IO_RF_EXTERNAL = IO_EXPANDER_PIN_NUM_0;  // 0x43 P0: antenna, low = internal
 static const uint32_t IO_SPEAKER_EN = IO_EXPANDER_PIN_NUM_1;   // 0x43 P1: NS4150B amplifier
 static const uint32_t IO_EXT5V_EN = IO_EXPANDER_PIN_NUM_2;     // 0x43 P2: 5 V to the side port (keyboard)
 static const uint32_t IO1_WLAN_PWR_EN = IO_EXPANDER_PIN_NUM_0; // 0x44 P0: ESP32-C6 power
-static const uint32_t IO1_QC_DISABLE = IO_EXPANDER_PIN_NUM_5;  // 0x44 P5: low = fast charge allowed
+static const uint32_t IO1_USB5V_EN = IO_EXPANDER_PIN_NUM_3;    // 0x44 P3: 5 V out of the USB-A port
+static const uint32_t IO1_PWROFF = IO_EXPANDER_PIN_NUM_4;      // 0x44 P4: power-off pulse
+static const uint32_t IO1_NQC_EN = IO_EXPANDER_PIN_NUM_5;      // 0x44 P5: low = quick charge
 static const uint32_t IO1_CHARGE_EN = IO_EXPANDER_PIN_NUM_7;   // 0x44 P7: IP2326 charger on
 
 static bool s_wifi_ready = false;
@@ -50,23 +53,30 @@ const board::Ui& board::ui()
 
 void board::init_power()
 {
-    // Both expanders are reset by their driver on first use (all inputs): set what SimplrSSH needs
+    // Both expanders are reset by their driver on first use: set what SimplrSSH needs
     esp_io_expander_handle_t io = bsp_io_expander_init();
     esp_io_expander_handle_t io1 = bsp_io_expander1_init();
     if (!io || !io1) {
         ESP_LOGE(TAG, "IO expanders not reachable");
         return;
     }
-    // Speaker amplifier off until audio_tab5.cpp plays something; side-port 5 V on for the keyboard
-    esp_io_expander_set_dir(io, IO_SPEAKER_EN | IO_EXT5V_EN, IO_EXPANDER_OUTPUT);
-    esp_io_expander_set_level(io, IO_SPEAKER_EN, 0);
+    // The driver's reset leaves every pin high-impedance (pulled low): each output must be set
+    // push-pull, or it never drives. Levels as M5Stack's own firmware sets them.
+    // Internal antenna; speaker amplifier off until audio_tab5.cpp plays; side-port 5 V on for the keyboard
+    const uint32_t outs = IO_RF_EXTERNAL | IO_SPEAKER_EN | IO_EXT5V_EN;
+    esp_io_expander_set_dir(io, outs, IO_EXPANDER_OUTPUT);
+    esp_io_expander_set_level(io, IO_RF_EXTERNAL | IO_SPEAKER_EN, 0);
     esp_io_expander_set_level(io, IO_EXT5V_EN, 1);
+    esp_io_expander_set_output_mode(io, outs, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL);
 
     // Power the WiFi co-processor now, so it has booted by the time WiFi is first used.
-    // The battery only charges while the firmware enables the charger (as the factory firmware does).
-    esp_io_expander_set_dir(io1, IO1_WLAN_PWR_EN | IO1_QC_DISABLE | IO1_CHARGE_EN, IO_EXPANDER_OUTPUT);
-    esp_io_expander_set_level(io1, IO1_WLAN_PWR_EN, 1);
-    esp_io_expander_set_level(io1, IO1_QC_DISABLE, 0);
+    // The battery only charges while the firmware enables the charger (standard charging, as
+    // the factory firmware does). USB-A 5 V off, no power-off pulse.
+    const uint32_t outs1 = IO1_WLAN_PWR_EN | IO1_USB5V_EN | IO1_PWROFF | IO1_NQC_EN | IO1_CHARGE_EN;
+    esp_io_expander_set_dir(io1, outs1, IO_EXPANDER_OUTPUT);
+    esp_io_expander_set_level(io1, IO1_USB5V_EN | IO1_PWROFF | IO1_CHARGE_EN, 0);
+    esp_io_expander_set_level(io1, IO1_WLAN_PWR_EN | IO1_NQC_EN, 1);
+    esp_io_expander_set_output_mode(io1, outs1, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL);
     vTaskDelay(pdMS_TO_TICKS(50));
     esp_io_expander_set_level(io1, IO1_CHARGE_EN, 1);
 }

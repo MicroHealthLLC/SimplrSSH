@@ -119,9 +119,11 @@ menu of short prompts; the screen is edge-to-edge text (no borders or decoration
   touch, detected by the `espressif/m5stack_tab5` BSP), rotated to 1280x720 landscape by the
   PPA (`LV_DISPLAY_ROTATION_90`, keyboard at the bottom); LVGL buffers in PSRAM. Backlight
   GPIO 22. System I2C on GPIO 31/32 (BSP): IO expanders, touch, codecs, INA226 battery monitor.
-- IO expanders (PI4IOE5V6408), reset by the BSP at init: 0x43 P1 speaker amp, P2 5 V to the
-  side port (the keyboard needs it), P4 LCD reset, P5 touch reset; 0x44 P0 ESP32-C6 power,
-  P5 fast-charge (low = on), P7 charger enable. `board::init_power()` sets them: the battery
+- IO expanders (PI4IOE5V6408), reset by the BSP at init: 0x43 P0 antenna (low = internal),
+  P1 speaker amp, P2 5 V to the side port (the keyboard needs it), P4 LCD reset, P5 touch
+  reset; 0x44 P0 ESP32-C6 power, P3 USB-A 5 V, P4 power-off pulse, P5 quick charge (low = on),
+  P7 charger enable. The reset leaves every pin high-impedance: an output only drives once set
+  push-pull (`esp_io_expander_set_output_mode()`). `board::init_power()` sets them: the battery
   charges only while firmware enables the charger.
 - Keyboard: STM32 at I2C 0x6D on its own bus (G0 SDA, G1 SCL), INT G50 low while events are
   queued, raw mode (press/release by row/column; reading 0x20 pops an event, so never retry
