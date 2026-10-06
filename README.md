@@ -57,6 +57,7 @@ anywhere.
  3) ChatGPT
  4) Storage (device / SD card)
  5) Security (PIN, server keys)
+ 6) Power (sleep, turn off)
 ```
 
 1. **WiFi**: choose **1) WiFi** → **Scan and connect**, pick your network and type the
@@ -110,6 +111,17 @@ OpenAI, and only while you use ChatGPT.
   device says so and doesn't upload the recording. Press **Esc** (T-Deck: swipe left, then Esc)
   to stop a recording, a reply being written, or a reply being read aloud.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
+- **Sleep**: choose **6) Power** → **Sleep**, or type `sleep`. The screen and WiFi turn off;
+  press any key or touch the screen to wake it (T-Deck: the trackball works too). The key or
+  touch that wakes it does nothing else. WiFi reconnects by itself, and with a PIN set the
+  saved passwords are locked again. Close an SSH session first (`exit`): while connected,
+  `sleep` and `shutdown` are sent to the server.
+- **Turn off**: choose **6) Power** → **Turn off**, or type `shutdown` (or `poweroff`).
+  Command history is saved first. *Tab5*: the Tab5 switches itself off; press the power button
+  to turn it on. On USB power it may stay on - then it sleeps instead. *T-Deck*: the screen,
+  keyboard, SD card and radio lose power and the processor goes into deep sleep (a very small
+  drain); press the trackball to start it again. Only the power switch disconnects the battery
+  completely.
 - **Help**: type `help` to list all commands.
 
 **T-Deck**: full-screen live tools such as `htop` or `watch` are hard to use, since input is
@@ -163,6 +175,11 @@ charges its battery over USB-C while SimplrSSH runs.
 - **Keys not found**: the card must be FAT32 and the folder must be named `ssh_keys`.
 - **"Installed without its settings partition"**: the launcher installed the wrong file.
   Install `-launcher.bin` instead.
+- **Tab5 power button**: it is wired to the Tab5's power circuit, not to the processor, so
+  SimplrSSH can't see it or make it put the device to sleep. A single press turns the Tab5 on,
+  a quick double press turns it off. To sleep with wake on any key or touch, use `sleep` (or
+  **6) Power** → **Sleep**). If a press leaves the screen dark and the next press brings back
+  the boot messages, the Tab5 was off (no drain), not asleep.
 
 ## More
 

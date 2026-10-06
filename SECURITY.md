@@ -140,6 +140,12 @@ Hardware behaviour on the Tab5 has not been confirmed on a device yet.
 | Every key goes to the server while connected on the Tab5 (Alt sends Esc + key) | Same data as typing a line on the T-Deck; nothing typed into the session is logged or kept in command history |
 | Key passphrase offered for every key; if a key turns out to be locked when connecting, the passphrase is asked on the open connection (3 tries) | Masked like every secret, held in the pending-connection record and wiped after the attempt; never logged. The host key is verified before it is asked. Keys in OpenSSH format (unsupported by libssh2 with mbed TLS) are reported with a conversion hint instead of a passphrase prompt |
 
+### Sleep and power off (2026-10-06)
+
+| Change | Security review |
+|---|---|
+| `sleep` / `shutdown` (home menu **6) Power**) turn the screen and WiFi off, or the device off (Tab5: power-off pulses on IO expander 0x44 P4; T-Deck: peripheral power off and deep sleep, woken by the trackball) | No new network use: WiFi is stopped while asleep and rejoins only a saved network on waking, as at boot. Sleep and power off are refused while an SSH session is open (there `sleep` and `shutdown` are sent to the server, so a server command is never taken as a local one); an open ChatGPT view is closed first, which cancels its request. With a PIN, sleeping locks the vault, so saved passwords need the PIN again after waking; without a PIN nothing changes. Unsaved command history (which never holds secrets) is saved before power off. The touch that wakes the device is absorbed by a full-screen layer, so it can't press a button on the dark screen |
+
 ### Known residual risks
 
 - Flash is not encrypted. Non-secret data (profiles, known hosts, command history, SD keys while

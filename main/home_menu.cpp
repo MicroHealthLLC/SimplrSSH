@@ -1,11 +1,14 @@
 /*
  * Home Menu
  * The start screen, and where 'menu' / 'exit' / every "0) Back" lead. Numbers
- * open an app; anything else typed is run as a command.
+ * open an app; anything else typed is run as a command. Also the Security menu and the
+ * Power menu (sleep, turn off; carried out by keypad_task, deck_base.cpp).
  */
 
 #include "ssh_terminal.hpp"
 #include "secret_vault.hpp"
+#include "board.hpp"
+#include "esp_timer.h"
 
 void SSHTerminal::go_home()
 {
@@ -55,8 +58,9 @@ bool SSHTerminal::home_step_prompt()
                         " 3) ChatGPT\n"
                         " 4) Storage (device / SD card)\n"
                         " 5) Security (PIN, server keys)\n"
-                        "Select 1-5, or type a command: ");
-            wizard.choices = {"1", "2", "3", "4", "5"};
+                        " 6) Power (sleep, turn off)\n"
+                        "Select 1-6, or type a command: ");
+            wizard.choices = {"1", "2", "3", "4", "5", "6"};
             return true;
         }
         case WizardStep::SecurityMenu:
@@ -69,6 +73,14 @@ bool SSHTerminal::home_step_prompt()
                         " 0) Back\n"
                         "Select: ");
             wizard.choices = {"1", "2", "3", "4", "0"};
+            return true;
+        case WizardStep::PowerMenu:
+            append_text("\n== Power ==\n");
+            append_text((std::string(" 1) Sleep (wake: ") + board::HINT_WAKE + ")\n").c_str());
+            append_text(" 2) Turn off\n"
+                        " 0) Back\n"
+                        "Select: ");
+            wizard.choices = {"1", "2", "0"};
             return true;
         default:
             return false;
@@ -91,6 +103,10 @@ bool SSHTerminal::home_step_input(const std::string& raw_input, const std::strin
                 wizard_reset();
                 wizard.menu = WizardStep::SecurityMenu;
                 wizard_goto(WizardStep::SecurityMenu);
+            } else if (input == "6") {
+                wizard_reset();
+                wizard.menu = WizardStep::PowerMenu;
+                wizard_goto(WizardStep::PowerMenu);
             } else if (input.empty()) {
                 wizard_prompt();
             } else {
@@ -121,7 +137,85 @@ bool SSHTerminal::home_step_input(const std::string& raw_input, const std::strin
             }
             return true;
 
+        case WizardStep::PowerMenu:
+            if (input == "1") {
+                request_power(PowerRequest::Sleep);
+            } else if (input == "2") {
+                request_power(PowerRequest::Off);
+            } else if (input == "0") {
+                go_home();
+            } else {
+                append_text("Invalid choice.\n");
+                wizard_prompt();
+            }
+            return true;
+
         default:
             return false;
     }
+}
+
+// Sleep / power off: recorded here, carried out by keypad_task once this input is handled
+void SSHTerminal::request_power(PowerRequest request)
+{
+    wizard_reset();
+    if (ssh_connected || session) {
+        append_text("SSH is connected - type 'exit' to close it first.\n");
+        return;
+    }
+    power_request = request;
+}
+
+SSHTerminal::PowerRequest SSHTerminal::take_power_request()
+{
+    PowerRequest request = power_request;
+    power_request = PowerRequest::None;
+    return request;
+}
+
+// Before sleeping or turning off: nothing left running, unsaved history saved, WiFi off.
+// With a PIN, the vault locks (like a computer going to sleep); without one nothing is asked.
+void SSHTerminal::power_prepare(PowerRequest request)
+{
+    if (chat_active) {
+        close_chat();
+    }
+    wizard_reset();
+    if (history_needs_save) {
+        history_needs_save = false;
+        save_history_to_nvs();
+    }
+    wifi_sleep();
+    if (vault::has_pin()) {
+        vault::lock();
+    }
+    if (request == PowerRequest::Off) {
+        append_text((std::string("\nTurning off. ") + board::HINT_POWER_ON + "\n").c_str());
+    } else {
+        append_text((std::string("\nSleeping. Wake it with ") + board::HINT_WAKE + ".\n").c_str());
+    }
+    refresh_display_now();
+}
+
+// Awake again: WiFi reconnects as at startup (unless the user had turned it off), then the menu
+void SSHTerminal::power_resume()
+{
+    last_input_ms = esp_timer_get_time() / 1000;
+    append_text("Awake.\n");
+    if (wifi_auto_enabled) {
+        wifi_retry_delay_s = 0;
+        wifi_next_retry_ms = last_input_ms + 30000;
+        wifi_auto_connect(false);
+    }
+    if (!wizard_active()) {   // Not waiting for a PIN
+        go_home();
+    }
+}
+
+// The device stayed on after 'shutdown' (Tab5 on USB power): it sleeps instead
+void SSHTerminal::power_off_failed()
+{
+    append_text((std::string("Still powered (USB keeps it on?) - sleeping instead. Wake it with ") +
+                 board::HINT_WAKE + ".\n").c_str());
+    refresh_display_now();
 }

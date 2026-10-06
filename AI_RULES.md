@@ -20,6 +20,8 @@ UI model: a home menu (numbered, `menu` anywhere, `exit` back to it), each app a
 menu of short prompts; the screen is edge-to-edge text (no borders or decoration). SSH sessions:
 on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-screen xterm
 (TUI programs) with every key sent to the server. Keep the T-Deck's terminal as it is.
+Local commands that are also shell commands (`sleep`, `shutdown`, `poweroff`, `power`) are taken
+only while no SSH session is open; in a session they go to the server.
 
 ## Scope: keep it lean
 
@@ -114,6 +116,10 @@ on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-sc
   (40/41/38) with the display: its own SPI3 bus at boot, a second device on the display's
   SPI2 bus afterwards (MISO routed in by `sdcard::share_display_bus()`).
 - Board power must be enabled via GPIO 10 before peripherals are used.
+- Power: the power switch alone disconnects the battery. `sleep` is CPU light sleep (display lock
+  held), woken by the trackball lines, the touch interrupt (GPIO 16) or a 200 ms timer that polls
+  the keyboard (its interrupt, GPIO 46, can't wake it). `shutdown` holds GPIO 10 low and deep
+  sleeps until the trackball press (GPIO 0, ext1); `init_power()` releases the hold.
 
 ## Hardware notes (Tab5)
 
@@ -136,12 +142,16 @@ on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-sc
   unmounting releases only slot 0.
 - Audio: ES7210 mics and ES8388 speaker codec on shared I2S pins (MCLK 30, BCLK 27, WS 29,
   DOUT 26, DIN 28), never used at the same time.
+- Power: the power button is wired to the power circuit only (single press on, double press off,
+  in hardware); firmware can't read it. `shutdown` sends 10 pulses on 0x44 P4 (as M5Unified);
+  on USB power the Tab5 may stay on. `sleep` turns the backlight and WiFi off; no CPU light sleep
+  (MIPI-DSI and the C6's SDIO link aren't proven across it).
 
 ## Code layout
 
 | File | Responsibility |
 |---|---|
-| `main/deck_base.cpp` | Boot, SD key loading, keypad_task (all input and terminal work) |
+| `main/deck_base.cpp` | Boot, SD key loading, keypad_task (all input and terminal work, the sleep loop) |
 | `main/board_tdeck.cpp`, `main/board_tab5.cpp` | Board layer (`board.hpp`): power, display, touch, keyboard, UI metrics, hints |
 | `main/tab5_keyboard.cpp`, `main/tab5_keymap.cpp` | Tab5 Keyboard: I2C driver; key map (host-tested) |
 | `main/ssh_terminal.cpp`, `main/command_redact.cpp` | Terminal UI, command parsing, WiFi driver, SSH connection; password redaction |
@@ -154,7 +164,7 @@ on the T-Deck, scrolling text and a line sent with Enter; on the Tab5, a full-sc
 | `main/settings_nvs.cpp` | Picks and opens the settings partition (`nvs` or a launcher's `simplrssh`) |
 | `main/storage_menu.cpp`, `main/settings_backup.cpp` | `storage` menu; SD backup/restore/erase |
 | `main/sd_card.cpp` | SD mounting (boot and runtime), SSH key loading |
-| `main/home_menu.cpp` | Home and Security menus, `go_home()` |
+| `main/home_menu.cpp` | Home, Security and Power menus, `go_home()`, sleep / power-off requests |
 | `main/chat_app.cpp`, `main/openai_client.cpp`, `main/audio.cpp` | ChatGPT app, OpenAI HTTPS client, recording processing |
 | `main/audio_tdeck.cpp`, `main/audio_tab5.cpp` | Microphone and speaker drivers per board |
 

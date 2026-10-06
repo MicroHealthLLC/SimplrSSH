@@ -68,6 +68,15 @@ public:
     void print_saved_summary();
     
     void update_status_bar();
+
+    // Sleep and power off (home menu 'Power', 'sleep', 'shutdown'). The menu only records the
+    // request; keypad_task carries it out without the display lock (deck_base.cpp), calling
+    // power_prepare() before and power_resume() after a sleep, both with the display lock held.
+    enum class PowerRequest { None, Sleep, Off };
+    PowerRequest take_power_request();
+    void power_prepare(PowerRequest request);
+    void power_resume();
+    void power_off_failed();
     
     // SSH key management
     void load_key_from_memory(const char* keyname, const char* key_data, size_t key_len);
@@ -93,8 +102,8 @@ private:
         SshKeyPassphrase,
         // Storage / SD card backup (storage_menu.cpp)
         StorageMenu, StorageConfirmBackup, StorageConfirmRestore, StorageConfirmErase,
-        // Home and security menus (home_menu.cpp)
-        HomeMenu, SecurityMenu,
+        // Home, security and power menus (home_menu.cpp)
+        HomeMenu, SecurityMenu, PowerMenu,
         // ChatGPT (chat_app.cpp)
         ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModelWait, ChatModel, ChatModelOther
     };
@@ -193,6 +202,7 @@ private:
     int wifi_retry_delay_s = 0;
     int64_t last_input_ms = 0;         // Background reconnects wait until the user is idle
     volatile bool home_pending = false;  // Set by other tasks (SSH closed): show the home menu
+    PowerRequest power_request = PowerRequest::None;   // For keypad_task (request_power())
 
     // ChatGPT (chat_app.cpp). History is touched only while holding the display lock.
     // Model names exactly as OpenAI gives them, saved. Until the user picks a chat model, and always
@@ -264,6 +274,7 @@ private:
     esp_err_t ssh_authenticate_pubkey(const char* username, const char* privkey_data, size_t privkey_len,
                                       const char* passphrase);
     esp_err_t start_wifi_driver();
+    void wifi_sleep();   // Radio off for sleep/power off; the next scan or connect starts it again
     esp_err_t scan_wifi(std::vector<WifiScanResult>& results);
     void refresh_display_now();
     esp_err_t ssh_open_channel();
@@ -328,8 +339,9 @@ private:
     void execute_command(const std::string& cmd);
     void wifi_maintain();
 
-    // Home and security menus (home_menu.cpp)
+    // Home, security and power menus (home_menu.cpp)
     void show_menu_after(WizardStep menu);
+    void request_power(PowerRequest request);
     bool home_step_prompt();
     bool home_step_input(const std::string& raw, const std::string& input);
 

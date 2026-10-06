@@ -33,6 +33,16 @@ namespace board
     void start_input_tasks();         // Board input pollers (the T-Deck's trackball)
     esp_err_t wifi_prepare();         // Before the WiFi driver starts (Tab5: link to its WiFi co-processor)
 
+    // Power (home menu 'Power', 'sleep' and 'shutdown'), from keypad_task without the display lock
+    void display_power(bool on);      // Backlight off/on; touch keeps working
+    // Waits up to ms while asleep. T-Deck: CPU light sleep, ended early by the trackball or a
+    // touch (returns true). Tab5: an idle wait (returns false); keys and touch are polled by the caller.
+    bool sleep_wait(uint32_t ms);
+    // Turns the device off and does not return (T-Deck: peripheral power off and deep sleep until
+    // the trackball is pressed, which starts it again). Returns only if the device stayed on
+    // (Tab5 on USB power).
+    void power_off();
+
     // Text sizes and spacing for the screen's size and pixel density
     struct Ui {
         const lv_font_t* small;       // Status line, side panel buttons
@@ -57,6 +67,8 @@ namespace board
     extern const char* const HINT_HISTORY;
     extern const char* const HINT_STOP;     // How to press Esc (stops a ChatGPT reply)
     extern const char* const SCREEN_DESC;   // For the ChatGPT system prompt
+    extern const char* const HINT_WAKE;     // What wakes the device from sleep
+    extern const char* const HINT_POWER_ON; // How to turn it on again after 'shutdown'
 }
 
 #endif
