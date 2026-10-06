@@ -45,6 +45,10 @@ CONFIG_WIFI_RMT_SOFTAP_SUPPORT=n
 # The host-side WiFi driver keeps no copy of the WiFi password in NVS (the vault has it);
 # the co-processor is told the same at runtime (esp_wifi_set_storage(WIFI_STORAGE_RAM))
 CONFIG_WIFI_RMT_NVS_ENABLED=n
+# sdkconfig.defaults turns WiFi receive IRAM off for the T-Deck. Here it is not a choice: the P4
+# runs no WiFi driver (the C6 does), and esp_wifi_remote derives this option, without a prompt,
+# from WIFI_RMT_RX_IRAM_OPT (y), so the shared =n can't apply and costs the P4 no IRAM
+CONFIG_ESP_WIFI_RX_IRAM_OPT=y
 
 # --- Display (MIPI-DSI 720x1280 panel shown as 1280x720 landscape) ------------
 # Rotate the LVGL frame with the ESP32-P4's pixel-processing accelerator instead of the CPU
