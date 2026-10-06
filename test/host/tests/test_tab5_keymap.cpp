@@ -88,7 +88,9 @@ TEST(keymap_alt_does_nothing_on_its_own)
     Tab5Keymap k;
     press(k, ALT, 0);
     CHECK_EQ(k.pop(), 0u);
-    CHECK_EQ(tap(k, Q), (uint32_t)'q');
+    release(k, ALT, 10);
+    CHECK_EQ(k.pop(), 0u);
+    CHECK_EQ(tap(k, Q, 20), (uint32_t)'q');
 }
 
 TEST(keymap_aa_hold_tap_and_caps_lock)
@@ -213,4 +215,27 @@ TEST(keymap_queue_is_bounded)
         n++;
     }
     CHECK(n <= 16);
+}
+
+TEST(keymap_alt_marks_keys_for_meta)
+{
+    Tab5Keymap k;
+    press(k, ALT, 0);
+    CHECK_EQ(tap(k, Q, 10), KEY_ALT | 'q');
+    CHECK_EQ(tap(k, DOT, 20), KEY_ALT | '.');
+    CHECK_EQ(tap(k, UP, 30), KEY_EVENT | INPUT_LEFT);         // Arrows are unchanged
+    release(k, ALT, 40);
+    CHECK_EQ(tap(k, Q, 50), (uint32_t)'q');
+}
+
+TEST(keymap_sym_digits_are_function_keys)
+{
+    Tab5Keymap k;
+    press(k, SYM, 0);
+    CHECK_EQ(tap(k, ONE, 10), KEY_EVENT | INPUT_F1);
+    CHECK_EQ(tap(k, Pos{0, 10}, 20), KEY_EVENT | (INPUT_F1 + 9));   // Sym+0: F10
+    CHECK_EQ(tap(k, Pos{0, 12}, 30), KEY_EVENT | INPUT_F12);        // Sym++: F12
+    CHECK_EQ(tap(k, DEL, 40), KEY_EVENT | INPUT_DELETE);
+    release(k, SYM, 50);
+    CHECK_EQ(tap(k, ONE, 60), (uint32_t)'1');
 }

@@ -45,6 +45,11 @@ const board::Ui& board::ui()
     return ui;
 }
 
+TermScreen* board::term_screen()
+{
+    return NULL;   // SSH output scrolls as text on the small screen
+}
+
 void board::init_power()
 {
     // Level is set before the pin becomes an output, so the peripheral power and the

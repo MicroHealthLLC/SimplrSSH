@@ -51,6 +51,13 @@ const board::Ui& board::ui()
     return ui;
 }
 
+TermScreen* tab5_term_view();   // term_view.cpp
+
+TermScreen* board::term_screen()
+{
+    return tab5_term_view();   // Full-screen terminal: TUI programs over SSH
+}
+
 void board::init_power()
 {
     // Both expanders are reset by their driver on first use: set what SimplrSSH needs

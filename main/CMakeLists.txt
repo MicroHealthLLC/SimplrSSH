@@ -56,6 +56,9 @@ if(IDF_TARGET STREQUAL "esp32p4")
         "tab5_keymap.cpp"
         "battery_tab5.cpp"
         "audio_tab5.cpp"
+        "vterm.cpp"
+        "term_view.cpp"
+        "font_term_mono_18.c"
     )
     # m5stack_tab5 (BSP) and esp_wifi_remote come from main/idf_component.yml
 else()

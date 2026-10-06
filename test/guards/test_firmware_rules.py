@@ -201,7 +201,7 @@ class Boards(unittest.TestCase):
     BOARD_FILES = {
         "esp32s3": {"board_tdeck.cpp", "c3_keyboard.cpp", "battery_measurement.cpp", "audio_tdeck.cpp"},
         "esp32p4": {"board_tab5.cpp", "tab5_keyboard.cpp", "tab5_keymap.cpp", "battery_tab5.cpp",
-                    "audio_tab5.cpp"},
+                    "audio_tab5.cpp", "vterm.cpp", "term_view.cpp"},
     }
 
     def test_board_sources_listed_per_target(self):

@@ -10,6 +10,8 @@
  *   Sym+Up / Sym+Down     scroll the screen
  *   Del                   delete at the cursor
  *   Ctrl+letter           control code (Ctrl+C = 3 ...), also Ctrl+[ \ ] ^ _ /
+ *   Alt+key               the key with Meta (KEY_ALT), for programs over SSH
+ *   Sym+1 ... Sym+0, -, + F1 ... F10, F11, F12
  *   Ctrl (hold alone)     push-to-talk in ChatGPT; held 1 s elsewhere: delete history entry
  */
 
@@ -43,6 +45,7 @@ private:
 
     bool sym = false;
     bool ctrl = false;
+    bool alt = false;
     bool aa_down = false;
     bool aa_used = false;          // Another key was pressed while Aa was held
     bool one_shot = false;
