@@ -386,7 +386,8 @@ void SSHTerminal::open_chat()
         lv_obj_add_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
         lv_obj_move_foreground(side_panel);
 
-        chat_add_bubble(BUBBLE_INFO, "ChatGPT (" + chat_model + ") - type, or " + board::HINT_TALK + " to talk.\n"
+        chat_add_bubble(BUBBLE_INFO, "ChatGPT (" + chat_model + ") - type, or " + board::HINT_TALK + " to talk. " +
+                                     board::HINT_STOP + " stops a reply.\n"
                                      "'clear' new chat | 'settings' | 'exit' menu");
         for (const auto& m : chat_history) {
             chat_add_bubble(m.from_user ? BUBBLE_USER : BUBBLE_AI, m.text);
@@ -397,6 +398,7 @@ void SSHTerminal::open_chat()
 void SSHTerminal::close_chat()
 {
     chat_recording = false;
+    chat_cancel = chat_busy;   // Leaving stops a reply or speech in progress
     chat_generation = chat_generation + 1;  // A running worker stops touching the view
     chat_active = false;
     input_banner.clear();
@@ -406,6 +408,19 @@ void SSHTerminal::close_chat()
     }
     lv_obj_clear_flag(terminal_output, LV_OBJ_FLAG_HIDDEN);
     update_input_display();
+}
+
+// Esc in the chat (display lock held): stops recording, the reply being written, or speech
+bool SSHTerminal::chat_stop()
+{
+    if (!chat_busy) {
+        return false;
+    }
+    chat_cancel = true;
+    chat_recording = false;
+    input_banner = "Stopping...";
+    update_input_display();
+    return true;
 }
 
 void SSHTerminal::chat_clear()
@@ -439,7 +454,7 @@ void SSHTerminal::chat_submit(const std::string& raw)
         wizard.menu = WizardStep::ChatMenu;
         wizard_goto(WizardStep::ChatMenu);
     } else if (chat_busy) {
-        chat_add_bubble(BUBBLE_INFO, "Still answering - one moment.");
+        chat_add_bubble(BUBBLE_INFO, "Still answering - " + std::string(board::HINT_STOP) + " stops it.");
     } else if (!wifi_connected) {
         chat_add_bubble(BUBBLE_INFO, "WiFi is off. Type 'exit', then pick WiFi.");
     } else {
@@ -452,6 +467,7 @@ void SSHTerminal::chat_submit(const std::string& raw)
 void SSHTerminal::chat_start_job(bool voice)
 {
     chat_busy = true;
+    chat_cancel = false;
     chat_job_voice = voice;
     if (xTaskCreate(chat_worker, "chat", WORKER_STACK, this, 4, NULL) != pdPASS) {
         chat_busy = false;
@@ -519,7 +535,7 @@ void SSHTerminal::chat_job()
         }
         size_t n = 0;
         int shown = -1;
-        while (chat_recording && n < MAX_RECORD_SAMPLES) {
+        while (chat_recording && !chat_cancel && n < MAX_RECORD_SAMPLES) {
             n += audio::mic_read(pcm + n, std::min<size_t>(1600, MAX_RECORD_SAMPLES - n));
             int secs = n / audio::MIC_RATE;
             if (secs != shown) {
@@ -529,6 +545,12 @@ void SSHTerminal::chat_job()
         }
         chat_recording = false;
         audio::mic_stop();
+        if (chat_cancel) {
+            heap_caps_free(pcm);
+            chat_ui_bubble(gen, BUBBLE_INFO, "Stopped.");
+            vault::wipe(key);
+            return;
+        }
 
         size_t skip = std::min(n, SKIP_SAMPLES);
         int16_t* voice = pcm + skip;
@@ -551,7 +573,10 @@ void SSHTerminal::chat_job()
             }
         }
         heap_caps_free(pcm);
-        if (heard.empty()) {
+        if (heard.empty() || chat_cancel) {
+            if (chat_cancel) {
+                chat_ui_bubble(gen, BUBBLE_INFO, "Stopped.");
+            }
             vault::wipe(key);
             return;
         }
@@ -583,6 +608,9 @@ void SSHTerminal::chat_job()
     std::string reply;
     int64_t last_draw = 0;
     esp_err_t err = openai::chat(key, model, context, [&](const std::string& piece) {
+        if (chat_cancel) {
+            return false;
+        }
         if (reply.size() < 4000) {
             reply += piece;
         }
@@ -591,8 +619,26 @@ void SSHTerminal::chat_job()
             last_draw = now;
             chat_ui_update(gen, label, reply);
         }
+        return true;
     }, error);
 
+    if (chat_cancel) {
+        // Stopped: keep what was written so far (it is part of the conversation), or nothing
+        chat_ui_update(gen, label, reply.empty() ? std::string("[stopped]") : reply + " [stopped]");
+        if (bsp_display_lock(1000)) {
+            if (!reply.empty()) {
+                chat_history.push_back({false, reply});
+            } else if (!chat_history.empty() && chat_history.back().from_user) {
+                chat_history.pop_back();
+            }
+            while (chat_history.size() > MAX_HISTORY) {
+                chat_history.erase(chat_history.begin());
+            }
+            bsp_display_unlock();
+        }
+        vault::wipe(key);
+        return;
+    }
     if (err != ESP_OK || reply.empty()) {
         chat_ui_update(gen, label, "! " + (error.empty() ? std::string("No reply") : error));
         if (bsp_display_lock(1000)) {
@@ -618,6 +664,9 @@ void SSHTerminal::chat_job()
         uint8_t carry = 0;
         bool has_carry = false;
         openai::speak(key, tts_model, reply, [&](const uint8_t* data, size_t len) {
+            if (chat_cancel) {
+                return false;   // Esc: silence now
+            }
             // Keep whole 16-bit samples across chunk boundaries
             if (has_carry && len > 0) {
                 uint8_t pair[2] = {carry, data[0]};
@@ -632,6 +681,7 @@ void SSHTerminal::chat_job()
                 len--;
             }
             audio::speaker_write(data, len);
+            return true;
         }, error);
         audio::speaker_stop();
     }
@@ -650,7 +700,7 @@ void SSHTerminal::on_trackball_hold(bool start, bool long_press)
             return;
         }
         if (chat_busy) {
-            chat_add_bubble(BUBBLE_INFO, "Still answering - one moment.");
+            chat_add_bubble(BUBBLE_INFO, "Still answering - " + std::string(board::HINT_STOP) + " stops it.");
         } else if (!wifi_connected) {
             chat_add_bubble(BUBBLE_INFO, "WiFi is off. Type 'exit', then pick WiFi.");
         } else {

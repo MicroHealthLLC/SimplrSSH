@@ -24,6 +24,7 @@ const char* const board::NAME = "Tab5";
 const char* const board::HINT_TALK = "hold Ctrl";
 const char* const board::HINT_SCROLL = "Sym+Up/Down or drag: scroll.";
 const char* const board::HINT_HISTORY = "Up/Down: history.";
+const char* const board::HINT_STOP = "Esc";
 const char* const board::SCREEN_DESC = "a 5-inch tablet with a 1280x720 text screen";
 
 // IO expander pins (M5Stack Tab5 pin map)

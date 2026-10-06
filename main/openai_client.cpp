@@ -111,7 +111,7 @@ static esp_err_t finish(esp_http_client_handle_t client, bool ok)
 }
 
 esp_err_t openai::chat(const std::string& key, const std::string& model, const std::vector<Message>& history,
-                       const std::function<void(const std::string&)>& on_text, std::string& error)
+                       const std::function<bool(const std::string&)>& on_text, std::string& error)
 {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "model", model.c_str());
@@ -169,8 +169,8 @@ esp_err_t openai::chat(const std::string& key, const std::string& model, const s
                     cJSON* event = cJSON_Parse(line.c_str() + 6);
                     cJSON* choice = cJSON_GetArrayItem(cJSON_GetObjectItem(event, "choices"), 0);
                     cJSON* content = cJSON_GetObjectItem(cJSON_GetObjectItem(choice, "delta"), "content");
-                    if (cJSON_IsString(content) && content->valuestring[0]) {
-                        on_text(content->valuestring);
+                    if (cJSON_IsString(content) && content->valuestring[0] && !on_text(content->valuestring)) {
+                        done = true;   // Stopped by the user: the connection is closed below
                     }
                     cJSON_Delete(event);
                 }
@@ -228,7 +228,7 @@ esp_err_t openai::transcribe(const std::string& key, const std::string& model, c
 }
 
 esp_err_t openai::speak(const std::string& key, const std::string& model, const std::string& text,
-                        const std::function<void(const uint8_t*, size_t)>& on_audio, std::string& error)
+                        const std::function<bool(const uint8_t*, size_t)>& on_audio, std::string& error)
 {
     cJSON* root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "model", model.c_str());
@@ -253,7 +253,9 @@ esp_err_t openai::speak(const std::string& key, const std::string& model, const 
     uint8_t buf[1024];
     int n;
     while ((n = esp_http_client_read(client, (char*)buf, sizeof(buf) & ~1u)) > 0) {
-        on_audio(buf, n);
+        if (!on_audio(buf, n)) {
+            break;   // Stopped by the user
+        }
     }
     ESP_LOGI(TAG, "Speech done");
     return finish(client, true);

@@ -107,7 +107,8 @@ OpenAI, and only while you use ChatGPT.
   go to send. Start talking
   once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
   sent as your message to the chat model you picked. If the microphone picks up nothing, the
-  device says so and doesn't upload the recording.
+  device says so and doesn't upload the recording. Press **Esc** (T-Deck: swipe left, then Esc)
+  to stop a recording, a reply being written, or a reply being read aloud.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
 - **Help**: type `help` to list all commands.
 
@@ -152,6 +153,11 @@ charges its battery over USB-C while SimplrSSH runs.
 ## Troubleshooting
 
 - **WiFi won't connect**: make sure the network is 2.4 GHz and shows up in the scan.
+- **SSH "Could not connect"**: the message says why. *Connection refused*: no SSH server on that
+  port, or the server is blocking the device (for example fail2ban after failed logins).
+  *No answer* / *no route*: wrong address, or the server isn't reachable from this WiFi (a
+  different network or a guest network that isolates devices). A host name also shows the
+  address it resolved to.
 - **"HOST KEY HAS CHANGED"**: if you know the server was reinstalled, run
   `hosts forget <host>` and connect again.
 - **Keys not found**: the card must be FAT32 and the folder must be named `ssh_keys`.

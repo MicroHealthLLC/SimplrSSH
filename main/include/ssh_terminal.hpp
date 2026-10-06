@@ -210,6 +210,7 @@ private:
     bool chat_job_voice = false;
     volatile bool chat_busy = false;
     volatile bool chat_recording = false;
+    volatile bool chat_cancel = false;      // Esc: the worker stops recording, answering or speaking
     volatile uint32_t chat_generation = 0;  // Bumped when the chat view closes
     std::vector<std::string> chat_models;  // From OpenAI, newest first (empty until asked)
     bool chat_models_for_menu = false;
@@ -339,6 +340,7 @@ private:
     void open_chat();
     void close_chat();
     void chat_clear();
+    bool chat_stop();
     void chat_submit(const std::string& text);
     void chat_start_job(bool voice);
     void chat_job();

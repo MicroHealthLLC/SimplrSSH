@@ -55,6 +55,7 @@ namespace board
     extern const char* const HINT_TALK;     // e.g. "hold the trackball"
     extern const char* const HINT_SCROLL;
     extern const char* const HINT_HISTORY;
+    extern const char* const HINT_STOP;     // How to press Esc (stops a ChatGPT reply)
     extern const char* const SCREEN_DESC;   // For the ChatGPT system prompt
 }
 
