@@ -9,6 +9,7 @@
  *   Left / Right          move the cursor; Sym+Left / Sym+Right: start / end of the line
  *   Sym+Up / Sym+Down     scroll the screen
  *   Del                   delete at the cursor
+ *   Ctrl+Del              back to the home menu from anywhere (ends SSH, closes ChatGPT)
  *   Ctrl+letter           control code (Ctrl+C = 3 ...), also Ctrl+[ \ ] ^ _ /
  *   Alt+key               the key with Meta (KEY_ALT), for programs over SSH
  *   Sym+1 ... Sym+0, -, + F1 ... F10, F11, F12

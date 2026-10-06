@@ -151,6 +151,31 @@ class Secrets(unittest.TestCase):
         self.assertGreater(sum(code.count("vault::wipe(") for code in SRC.values()), 3)
 
 
+class Power(unittest.TestCase):
+    """Sleep and power off (AI_RULES.md, UI model): never taken from an SSH session's input."""
+
+    def test_shell_named_commands_only_without_ssh(self):
+        terminal = SRC["main/ssh_terminal.cpp"]
+        for word in ("sleep", "shutdown", "poweroff", "power"):
+            lines = [line for line in terminal.splitlines() if f'cmd == "{word}"' in line]
+            self.assertTrue(lines, f"'{word}' command missing")
+            for line in lines:
+                with self.subTest(command=word):
+                    self.assertIn("!ssh_connected", line)
+
+    def test_request_refused_while_connected(self):
+        home = SRC["main/home_menu.cpp"]
+        body = home.split("void SSHTerminal::request_power", 1)[1].split("\n}", 1)[0]
+        self.assertIn("ssh_connected", body)
+
+    def test_power_prepare_saves_and_stops(self):
+        home = SRC["main/home_menu.cpp"]
+        body = home.split("void SSHTerminal::power_prepare", 1)[1].split("\n}", 1)[0]
+        for call in ("close_chat()", "save_history_to_nvs()", "wifi_sleep()", "vault::lock()"):
+            with self.subTest(call=call):
+                self.assertIn(call, body)
+
+
 # Each board's defaults and the sdkconfig they must have reached (later files override earlier)
 BOARD_CONFIGS = {
     "sdkconfig": ["sdkconfig.defaults"],

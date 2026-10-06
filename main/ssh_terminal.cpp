@@ -44,6 +44,7 @@ static int s_retry_num = 0;
 #define WIFI_MAXIMUM_RETRY 5
 
 static bool s_wifi_started = false;
+static bool s_wifi_stopped = false;       // Radio off while asleep (wifi_sleep())
 static bool s_connect_requested = false;  // Reconnect on drop only while a connection is wanted
 
 static esp_event_handler_instance_t s_instance_any_id = NULL;
@@ -156,6 +157,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 esp_err_t SSHTerminal::start_wifi_driver()
 {
     if (s_wifi_started) {
+        if (s_wifi_stopped) {
+            esp_err_t err = esp_wifi_start();
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "WiFi restart failed (%s)", esp_err_to_name(err));
+                return err;
+            }
+            s_wifi_stopped = false;
+        }
         return ESP_OK;
     }
     
@@ -291,7 +300,24 @@ void SSHTerminal::disconnect_wifi()
     }
 }
 
-// Called from the WiFi event task when an established connection is gone for good
+// Sleep and power off: leaves the network and turns the radio off. wifi_auto_enabled is kept,
+// so a saved network is joined again after waking.
+void SSHTerminal::wifi_sleep()
+{
+    if (!s_wifi_started || s_wifi_stopped) {
+        return;
+    }
+    s_connect_requested = false;
+    if (wifi_connected) {
+        esp_wifi_disconnect();
+    }
+    esp_wifi_stop();
+    s_wifi_stopped = true;
+    wifi_connected = false;
+    wifi_ssid.clear();
+    update_status_bar();
+}
+
 void SSHTerminal::print_saved_summary()
 {
     std::string line = "Saved on this device: " + std::to_string(saved_networks.size()) + " WiFi network" +
@@ -304,6 +330,7 @@ void SSHTerminal::print_saved_summary()
     }
 }
 
+// Called from the WiFi event task when an established connection is gone for good
 void SSHTerminal::wifi_link_lost()
 {
     if (!wifi_connected) {
@@ -613,7 +640,7 @@ void SSHTerminal::scroll_end_cb(lv_event_t* e)
 void SSHTerminal::execute_command(const std::string& cmd)
 {
     // Home menu numbers work any time the menu isn't on screen (and no SSH session is open)
-    if (!ssh_connected && cmd.size() == 1 && cmd[0] >= '1' && cmd[0] <= '5') {
+    if (!ssh_connected && cmd.size() == 1 && cmd[0] >= '1' && cmd[0] <= '6') {
         wizard_reset();
         wizard.menu = WizardStep::HomeMenu;
         wizard.step = WizardStep::HomeMenu;
@@ -622,6 +649,18 @@ void SSHTerminal::execute_command(const std::string& cmd)
     }
     if (cmd == "connect" || cmd == "wifi" || cmd.rfind("wifi ", 0) == 0) {
         handle_wifi_command(cmd == "connect" ? "wifi scan" : cmd);
+    }
+    // Not while SSH is connected: there 'shutdown' and 'sleep' are sent to the server
+    else if (!ssh_connected && cmd == "power") {
+        wizard_reset();
+        wizard.menu = WizardStep::PowerMenu;
+        wizard_goto(WizardStep::PowerMenu);
+    }
+    else if (!ssh_connected && cmd == "sleep") {
+        request_power(PowerRequest::Sleep);
+    }
+    else if (!ssh_connected && (cmd == "shutdown" || cmd == "poweroff")) {
+        request_power(PowerRequest::Off);
     }
     else if (cmd == "vault" || cmd.rfind("vault ", 0) == 0) {
         handle_vault_command(cmd);
@@ -800,7 +839,11 @@ void SSHTerminal::execute_command(const std::string& cmd)
         append_text("  hosts - Trusted server keys | hosts forget [HOST|#]\n");
         append_text("  storage - Saved settings: SD backup/restore, load keys\n");
         append_text("  disconnect - Disconnect WiFi\n");
+        append_text((std::string("  sleep - Screen and WiFi off until ") + board::HINT_WAKE + "\n").c_str());
+        append_text("  shutdown - Turn the device off (also 'poweroff'; 'power' menu)\n");
         append_text("  exit - Disconnect SSH\n");
+        append_text("  Ctrl+Del (Tab5) or the side panel's Menu (swipe left): back to the menu\n"
+                    "    from anywhere - ends SSH, closes ChatGPT\n");
         append_text("  clear - Clear terminal\n");
         append_text("  help - Show this help\n");
         append_text((std::string(board::HINT_SCROLL) + " " + board::HINT_HISTORY + "\n").c_str());
@@ -2055,7 +2098,7 @@ void SSHTerminal::create_side_panel()
     create_key_button("Ctrl+L", "\x0C");
     create_key_button("Tab", "\t");
     create_key_button("Esc", "\x1B");
-    create_key_button("Exit SSH", "EXIT");
+    create_key_button("Menu", "MENU");   // Back to the home menu from anywhere (ends SSH)
     create_key_button("Clear", "CLEAR");
 }
 
@@ -2079,10 +2122,9 @@ void SSHTerminal::send_special_key(const char* sequence)
         return;
     }
     
-    if (strcmp(sequence, "EXIT") == 0) {
-        disconnect();
-        home_pending = true;
+    if (strcmp(sequence, "MENU") == 0) {
         toggle_side_panel();
+        leave_to_home();
         return;
     }
     

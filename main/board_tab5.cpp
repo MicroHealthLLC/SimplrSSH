@@ -26,6 +26,8 @@ const char* const board::HINT_SCROLL = "Sym+Up/Down or drag: scroll.";
 const char* const board::HINT_HISTORY = "Up/Down: history.";
 const char* const board::HINT_STOP = "Esc";
 const char* const board::SCREEN_DESC = "a 5-inch tablet with a 1280x720 text screen";
+const char* const board::HINT_WAKE = "any key or a touch";
+const char* const board::HINT_POWER_ON = "Press the power button to turn it on again.";
 
 // IO expander pins (M5Stack Tab5 pin map)
 static const uint32_t IO_RF_EXTERNAL = IO_EXPANDER_PIN_NUM_0;  // 0x43 P0: antenna, low = internal
@@ -33,7 +35,7 @@ static const uint32_t IO_SPEAKER_EN = IO_EXPANDER_PIN_NUM_1;   // 0x43 P1: NS415
 static const uint32_t IO_EXT5V_EN = IO_EXPANDER_PIN_NUM_2;     // 0x43 P2: 5 V to the side port (keyboard)
 static const uint32_t IO1_WLAN_PWR_EN = IO_EXPANDER_PIN_NUM_0; // 0x44 P0: ESP32-C6 power
 static const uint32_t IO1_USB5V_EN = IO_EXPANDER_PIN_NUM_3;    // 0x44 P3: 5 V out of the USB-A port
-static const uint32_t IO1_PWROFF = IO_EXPANDER_PIN_NUM_4;      // 0x44 P4: power-off pulse
+static const uint32_t IO1_PWROFF = IO_EXPANDER_PIN_NUM_4;      // 0x44 P4: power-off pulses (power_off())
 static const uint32_t IO1_NQC_EN = IO_EXPANDER_PIN_NUM_5;      // 0x44 P5: low = quick charge
 static const uint32_t IO1_CHARGE_EN = IO_EXPANDER_PIN_NUM_7;   // 0x44 P7: IP2326 charger on
 
@@ -150,4 +152,35 @@ esp_err_t board::wifi_prepare()
     }
     s_wifi_ready = true;
     return ESP_OK;
+}
+
+void board::display_power(bool on)
+{
+    bsp_display_brightness_set(on ? 100 : 0);
+}
+
+// The display, WiFi co-processor link and PSRAM stay as they are (no CPU light sleep): the
+// backlight is off and WiFi stopped, and the CPU idles between the caller's key and touch checks
+bool board::sleep_wait(uint32_t ms)
+{
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    return false;
+}
+
+// The power circuit switches off on a train of pulses on 0x44 P4, as M5Stack's M5Unified does.
+// The power button is not wired to the ESP32-P4: a single press turns the Tab5 on, a double press
+// off, in hardware. On USB power the Tab5 may stay on; then this returns.
+void board::power_off()
+{
+    esp_io_expander_handle_t io1 = bsp_io_expander1_init();
+    if (!io1) {
+        return;
+    }
+    bsp_display_brightness_set(0);
+    for (int i = 0; i < 10; i++) {
+        esp_io_expander_set_level(io1, IO1_PWROFF, i & 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_io_expander_set_level(io1, IO1_PWROFF, 0);
 }

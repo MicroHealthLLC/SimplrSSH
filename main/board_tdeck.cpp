@@ -17,6 +17,8 @@
 #include "bsp/touch.h"
 #include "esp_lcd_touch_gt911.h"
 #include "driver/gpio.h"
+#include "driver/rtc_io.h"
+#include "esp_sleep.h"
 
 #include "utilities.h"
 #include "c3_keyboard.hpp"
@@ -32,6 +34,8 @@ const char* const board::HINT_SCROLL = "Trackball up/down or drag: scroll.";
 const char* const board::HINT_HISTORY = "Left/right: history.";
 const char* const board::HINT_STOP = "Esc (swipe left)";
 const char* const board::SCREEN_DESC = "a tiny handheld with a 320x240 text screen";
+const char* const board::HINT_WAKE = "any key, the trackball or a touch";
+const char* const board::HINT_POWER_ON = "Press the trackball to turn it on again (the power switch disconnects the battery).";
 
 static C3Keyboard* s_keyboard = NULL;
 
@@ -53,6 +57,9 @@ TermScreen* board::term_screen()
 
 void board::init_power()
 {
+    // After 'shutdown' the peripheral power pin is held low through deep sleep: release it
+    gpio_hold_dis(BOARD_POWERON);
+
     // Level is set before the pin becomes an output, so the peripheral power and the
     // chip selects never glitch low (a low pulse on the SD card's CS or supply can corrupt it)
     gpio_config_t out = {};
@@ -231,4 +238,64 @@ void board::start_input_tasks()
 esp_err_t board::wifi_prepare()
 {
     return ESP_OK;   // WiFi is built into the ESP32-S3
+}
+
+void board::display_power(bool on)
+{
+    if (on) {
+        bsp_display_backlight_on();
+    } else {
+        bsp_display_backlight_off();
+    }
+}
+
+// Light sleep (WiFi is already off). Wakes on the trackball (press or roll: each line wakes on
+// the level opposite to its current one), the touch interrupt, or after ms. The keyboard has no
+// usable wake line, so the caller polls it between sleeps. The display lock is held while
+// asleep, so the CPU never stops in the middle of a display transfer or touch read.
+bool board::sleep_wait(uint32_t ms)
+{
+    if (!bsp_display_lock(ms)) {
+        return false;
+    }
+    const gpio_num_t pins[] = {BOARD_BOOT_PIN, BOARD_TBOX_G01, BOARD_TBOX_G02, BOARD_TBOX_G03,
+                               BOARD_TBOX_G04, BOARD_TOUCH_INT};
+    for (gpio_num_t pin : pins) {
+        int level = gpio_get_level(pin);
+        if (pin == BOARD_TOUCH_INT && level == 0) {
+            continue;   // Interrupt already active: the touch is read by LVGL between sleeps
+        }
+        gpio_wakeup_enable(pin, level ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
+    }
+    esp_sleep_enable_gpio_wakeup();
+    esp_sleep_enable_timer_wakeup((uint64_t)ms * 1000);
+    esp_light_sleep_start();
+    bool woken = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO;
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    for (gpio_num_t pin : pins) {
+        gpio_wakeup_disable(pin);
+    }
+    bsp_display_unlock();
+    return woken;
+}
+
+// The battery is switched only by the power switch: the lowest state software can reach is deep
+// sleep with the peripherals (display, keyboard, touch, SD card, radio) unpowered. Pressing the
+// trackball wakes the ESP32-S3, which then boots as after power-on.
+void board::power_off()
+{
+    bsp_display_backlight_off();
+    // A trackball still held down would wake it at once
+    for (int i = 0; i < 100 && gpio_get_level(BOARD_BOOT_PIN) == 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    gpio_set_level(BOARD_POWERON, 0);
+    gpio_hold_en(BOARD_POWERON);
+    gpio_deep_sleep_hold_en();
+
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);   // Keeps the pull-up below
+    rtc_gpio_pullup_en(BOARD_BOOT_PIN);
+    rtc_gpio_pulldown_dis(BOARD_BOOT_PIN);
+    esp_sleep_enable_ext1_wakeup_io(1ULL << BOARD_BOOT_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
+    esp_deep_sleep_start();
 }

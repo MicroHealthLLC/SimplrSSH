@@ -65,6 +65,7 @@ uint32_t Tab5Keymap::translate(int row, int col, bool* repeats)
     if (at(row, col, 2, 0)) { *repeats = false; return '\t'; }                  // Tab
     if (at(row, col, 3, 13)) { *repeats = false; return '\n'; }                 // Enter
     if (at(row, col, 2, 13)) { return 8; }                                      // Backspace
+    if (at(row, col, 0, 13) && ctrl) { *repeats = false; return KEY_EVENT | INPUT_GO_HOME; }   // Ctrl+Del
     if (at(row, col, 0, 13)) { return KEY_EVENT | INPUT_DELETE; }               // Del
     if (at(row, col, 3, 11)) { return KEY_EVENT | (sym ? INPUT_UP : INPUT_LEFT); }      // Up
     if (at(row, col, 4, 11)) { return KEY_EVENT | (sym ? INPUT_DOWN : INPUT_RIGHT); }   // Down

@@ -48,7 +48,9 @@ a Tab5, hold its reset button for about 2 seconds, until the green LED flashes q
 
 The device starts at the home menu. Type a number and press Enter, or roll the trackball
 left/right (Tab5: Up/Down) to pick and press it. `0` goes back, and `menu` returns home from
-anywhere.
+anywhere. To leave an app from any screen - even an SSH session or ChatGPT, where what you
+type goes to the server or the chat - press **Ctrl+Del** on the Tab5 keyboard, or swipe left
+and tap **Menu** (the T-Deck's keyboard has no Ctrl key).
 
 ```
 == SimplrSSH ==
@@ -57,6 +59,7 @@ anywhere.
  3) ChatGPT
  4) Storage (device / SD card)
  5) Security (PIN, server keys)
+ 6) Power (sleep, turn off)
 ```
 
 1. **WiFi**: choose **1) WiFi** → **Scan and connect**, pick your network and type the
@@ -102,7 +105,10 @@ OpenAI, and only while you use ChatGPT.
   the Tab5 keyboard just press them: Ctrl+letter, Tab and Esc go straight to the server.
 - **History**: roll the trackball left (older) or right (newer). Tab5: Up / Down.
 - **Disconnect**: type `exit` to return to the menu (on the Tab5 this ends the shell on the
-  server). The side panel's **Exit SSH** also disconnects.
+  server).
+- **Back to the menu from anywhere**: **Ctrl+Del** (Tab5), or swipe left and tap **Menu**
+  (both boards). It ends an SSH session, closes ChatGPT (stopping a recording, reply or
+  speech) or cancels a menu, clears the input line, and shows the home menu.
 - **ChatGPT**: type to chat, or hold the trackball (Tab5: hold Ctrl) to speak and let
   go to send. Start talking
   once `* Recording` shows. Your speech is transcribed by OpenAI's speech-to-text model, then
@@ -110,6 +116,17 @@ OpenAI, and only while you use ChatGPT.
   device says so and doesn't upload the recording. Press **Esc** (T-Deck: swipe left, then Esc)
   to stop a recording, a reply being written, or a reply being read aloud.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
+- **Sleep**: choose **6) Power** → **Sleep**, or type `sleep`. The screen and WiFi turn off;
+  press any key or touch the screen to wake it (T-Deck: the trackball works too). The key or
+  touch that wakes it does nothing else. WiFi reconnects by itself, and with a PIN set the
+  saved passwords are locked again. Close an SSH session first (`exit`): while connected,
+  `sleep` and `shutdown` are sent to the server.
+- **Turn off**: choose **6) Power** → **Turn off**, or type `shutdown` (or `poweroff`).
+  Command history is saved first. *Tab5*: the Tab5 switches itself off; press the power button
+  to turn it on. On USB power it may stay on - then it sleeps instead. *T-Deck*: the screen,
+  keyboard, SD card and radio lose power and the processor goes into deep sleep (a very small
+  drain); press the trackball to start it again. Only the power switch disconnects the battery
+  completely.
 - **Help**: type `help` to list all commands.
 
 **T-Deck**: full-screen live tools such as `htop` or `watch` are hard to use, since input is
@@ -132,6 +149,7 @@ Sym+Up / Sym+Down are Page Up / Page Down.
 | Left / Right | Move the cursor. Sym+Left / Sym+Right: start / end of the line |
 | Sym+Up / Sym+Down | Scroll the screen |
 | Del | Delete the character at the cursor |
+| Ctrl+Del | Back to the home menu from any screen: ends an SSH session, closes ChatGPT |
 | Aa | Hold for capitals; tap for one capital; tap twice for caps lock |
 | Sym + key | The key's second symbol (`?` `/` `<` `>` `{` `}` `\|` `~` `:` `"` `=` `,`) |
 | Ctrl + letter | Control code to the server (Ctrl+C, Ctrl+D, Ctrl+Z, Ctrl+L ...) |
@@ -146,6 +164,7 @@ In an SSH session the keys go to the server:
 | Sym+1 ... Sym+0, Sym+-, Sym++ | F1 ... F10, F11, F12 (for example F10 quits `htop`) |
 | Alt + key | The key with Alt (Meta), for programs that use it |
 | Enter, Backspace, Tab, Esc, Del, Ctrl + letter | As on a computer |
+| Ctrl+Del | Not sent: ends the session and returns to the home menu |
 
 Held keys repeat. The keyboard can be attached or removed while SimplrSSH runs, and the Tab5
 charges its battery over USB-C while SimplrSSH runs.
@@ -163,6 +182,11 @@ charges its battery over USB-C while SimplrSSH runs.
 - **Keys not found**: the card must be FAT32 and the folder must be named `ssh_keys`.
 - **"Installed without its settings partition"**: the launcher installed the wrong file.
   Install `-launcher.bin` instead.
+- **Tab5 power button**: it is wired to the Tab5's power circuit, not to the processor, so
+  SimplrSSH can't see it or make it put the device to sleep. A single press turns the Tab5 on,
+  a quick double press turns it off. To sleep with wake on any key or touch, use `sleep` (or
+  **6) Power** → **Sleep**). If a press leaves the screen dark and the next press brings back
+  the boot messages, the Tab5 was off (no drain), not asleep.
 
 ## More
 

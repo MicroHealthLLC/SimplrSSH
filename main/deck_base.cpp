@@ -13,6 +13,7 @@
 #include "freertos/queue.h"
 #include "esp_log.h"
 #include "esp_err.h"
+#include "esp_timer.h"
 #include "bsp/esp-bsp.h"
 
 #include "board.hpp"
@@ -53,11 +54,125 @@ static void handle_input_event(uint8_t event)
         case board::INPUT_CURSOR_HOME:   ssh_terminal->move_cursor_home(); break;
         case board::INPUT_CURSOR_END:    ssh_terminal->move_cursor_end(); break;
         case board::INPUT_DELETE:        ssh_terminal->delete_at_cursor(); break;
+        case board::INPUT_GO_HOME:       ssh_terminal->leave_to_home(); break;   // Ctrl+Del (Tab5)
         default:
             if (event >= board::INPUT_F1 && event <= board::INPUT_F12) {
                 ssh_terminal->function_key(event - board::INPUT_F1);
             }
             break;
+    }
+}
+
+// Sleep (Power menu, 'sleep'): screen and WiFi off until a key, the trackball or a touch.
+// Runs in keypad_task without the display lock, so LVGL keeps reading the touch panel.
+static const uint32_t SLEEP_POLL_MS = 200;      // Keyboard checks while asleep
+static volatile bool s_touch_woke = false;
+
+static void wake_layer_cb(lv_event_t*)
+{
+    s_touch_woke = true;
+}
+
+static bool touch_pressed()
+{
+    for (lv_indev_t* indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER &&
+            lv_indev_get_state(indev) == LV_INDEV_STATE_PRESSED) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Reads and drops waiting keys and input events; true if there were any
+static bool drop_input()
+{
+    bool any = false;
+    for (int i = 0; i < 64 && board::read_key(); i++) {
+        any = true;
+    }
+    if (uxQueueMessagesWaiting(input_events)) {
+        xQueueReset(input_events);
+        any = true;
+    }
+    return any;
+}
+
+static void sleep_until_woken()
+{
+    // A full-screen layer takes every touch while asleep, so the touch that wakes the device
+    // doesn't also press whatever is under it on the dark screen
+    bsp_display_lock(0);
+    lv_obj_t* layer = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(layer);
+    lv_obj_set_size(layer, LV_PCT(100), LV_PCT(100));
+    lv_obj_add_flag(layer, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(layer, wake_layer_cb, LV_EVENT_PRESSED, NULL);
+    bsp_display_unlock();
+
+    vTaskDelay(pdMS_TO_TICKS(1000));   // Time to read the message
+    s_touch_woke = false;
+    drop_input();                      // The key that chose Sleep doesn't wake it
+    board::display_power(false);
+    while (!s_touch_woke) {
+        if (board::sleep_wait(SLEEP_POLL_MS) || drop_input()) {
+            break;
+        }
+    }
+    board::display_power(true);
+
+    // What woke it does nothing else: keys, trackball and touch are dropped until released
+    // (at least 0.5 s, at most 3 s)
+    int64_t start = esp_timer_get_time() / 1000;
+    int64_t last_input = start;
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+        int64_t now = esp_timer_get_time() / 1000;
+        bool busy = drop_input();
+        if (bsp_display_lock(0)) {
+            busy = touch_pressed() || busy;
+            bsp_display_unlock();
+        }
+        if (busy) {
+            last_input = now;
+        }
+        if ((now - start >= 500 && now - last_input >= 300) || now - start >= 3000) {
+            break;
+        }
+    }
+    bsp_display_lock(0);
+    lv_obj_delete(layer);
+    bsp_display_unlock();
+}
+
+// Sleep or power off chosen in the Power menu
+static void handle_power_request()
+{
+    SSHTerminal::PowerRequest request = SSHTerminal::PowerRequest::None;
+    if (bsp_display_lock(0)) {
+        request = ssh_terminal->take_power_request();
+        if (request != SSHTerminal::PowerRequest::None) {
+            ssh_terminal->power_prepare(request);
+        }
+        bsp_display_unlock();
+    }
+    if (request == SSHTerminal::PowerRequest::None) {
+        return;
+    }
+    if (request == SSHTerminal::PowerRequest::Off) {
+        vTaskDelay(pdMS_TO_TICKS(1000));   // Time to read the message
+        board::power_off();                // Returns only if the device stayed on
+        board::display_power(true);
+        if (bsp_display_lock(0)) {
+            ssh_terminal->power_off_failed();
+            bsp_display_unlock();
+        }
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+    sleep_until_woken();
+    if (bsp_display_lock(0)) {
+        ssh_terminal->power_resume();
+        bsp_display_unlock();
     }
 }
 
@@ -108,6 +223,8 @@ static void keypad_task(void *param)
             handle_input_event(event);
             bsp_display_unlock();
         }
+
+        handle_power_request();
 
         // WiFi reconnect, return to the menu after an SSH session ends
         if (bsp_display_lock(0)) {

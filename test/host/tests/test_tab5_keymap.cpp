@@ -45,6 +45,20 @@ TEST(keymap_special_keys)
     CHECK_EQ(tap(k, DEL), KEY_EVENT | INPUT_DELETE);
 }
 
+TEST(keymap_ctrl_del_goes_home)
+{
+    Tab5Keymap k;
+    press(k, CTRL, 0);
+    press(k, DEL, 10);
+    CHECK_EQ(k.pop(), KEY_EVENT | INPUT_GO_HOME);
+    k.tick(2000);                                           // Held: never repeats
+    CHECK_EQ(k.pop(), 0u);
+    release(k, DEL, 2010);
+    release(k, CTRL, 2020);
+    CHECK_EQ(k.pop(), 0u);                                  // Not push-to-talk either
+    CHECK_EQ(tap(k, DEL, 3000), KEY_EVENT | INPUT_DELETE);  // Del alone still deletes
+}
+
 TEST(keymap_sym_layer)
 {
     Tab5Keymap k;
