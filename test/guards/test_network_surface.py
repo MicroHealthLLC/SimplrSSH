@@ -1,7 +1,8 @@
 """
 Network surface (AI_RULES.md, Scope and Security): station-only WiFi, IPv4, no listening
-sockets, no servers, OTA or Bluetooth, and the only fixed endpoint is api.openai.com over
-verified TLS. The built firmware is checked too, by check_firmware_surface.py in CI.
+sockets, no servers, OTA or Bluetooth. The only fixed endpoints are api.openai.com over
+verified TLS and the captive-portal probe, the one plain-HTTP address, fetched only while the
+user signs in to a network. The built firmware is checked too, by check_firmware.py in CI.
 """
 
 import re
@@ -10,7 +11,8 @@ import unittest
 import repo
 
 SRC = {name: repo.strip_comments(text) for name, text in repo.sources().items()}
-ALLOWED_HOSTS = {"api.openai.com"}
+ALLOWED_HOSTS = {"api.openai.com", "connectivitycheck.gstatic.com"}
+PROBE = '"http://connectivitycheck.gstatic.com/generate_204"'
 
 
 def find(pattern):
@@ -35,21 +37,79 @@ class SourceSurface(unittest.TestCase):
         hits = [h for h in find(forbidden) if "esp_ota_ops" not in h or "settings_nvs.cpp" not in h]
         self.assertEqual(hits, [], "esp_ota_ops is allowed only in settings_nvs.cpp (running partition)")
 
-    def test_only_openai_endpoint(self):
+    def test_only_known_endpoints(self):
         for name, text in repo.sources().items():
             for host in re.findall(r"https?://([A-Za-z0-9.-]+)", text):
                 with self.subTest(file=name, host=host):
                     self.assertIn(host, ALLOWED_HOSTS)
-            with self.subTest(file=name):
-                self.assertNotRegex(text, r'"http://', "plain HTTP is never used")
+
+    def test_plain_http_only_for_the_portal_probe(self):
+        hits = [(name, m) for name, text in repo.sources().items() for m in re.findall(r'"http://[^"]*"', text)]
+        self.assertEqual(hits, [("main/portal_client.cpp", PROBE)],
+                         "plain HTTP is used only for the captive-portal probe")
+        self.assertNotIn("gstatic", SRC["main/openai_client.cpp"])
 
     def test_tls_verified_with_ca_bundle(self):
-        client = SRC["main/openai_client.cpp"]
-        self.assertIn("crt_bundle_attach = esp_crt_bundle_attach", client)
+        for client in ("main/openai_client.cpp", "main/portal_client.cpp"):
+            with self.subTest(file=client):
+                self.assertIn("crt_bundle_attach = esp_crt_bundle_attach", SRC[client])
         for name, code in SRC.items():
             with self.subTest(file=name):
                 self.assertNotRegex(code, r"skip_cert_common_name_check\s*=\s*true|use_global_ca_store|"
                                           r"MBEDTLS_SSL_VERIFY_NONE|MBEDTLS_SSL_VERIFY_OPTIONAL")
+
+
+def function_body(code, name):
+    """Body of SSHTerminal::name in `code` (comments already stripped)."""
+    m = re.search(r"\b" + name + r"\s*\([^)]*\)\s*(?:const\s*)?\{", code)
+    if not m:
+        return None
+    depth, i = 1, m.end()
+    while depth and i < len(code):
+        depth += {"{": 1, "}": -1}.get(code[i], 0)
+        i += 1
+    return code[m.end():i]
+
+
+class SignInPages(unittest.TestCase):
+    """Captive portal (AI_RULES.md, Scope): only while the user signs in, nothing kept."""
+
+    PORTAL_FILES = ("main/portal.cpp", "main/portal_client.cpp", "main/portal_menu.cpp")
+
+    def test_only_started_by_the_user(self):
+        # Background work (boot, reconnects, the idle tick) never loads a sign-in page
+        for name, function in (("main/wifi_menu.cpp", "wifi_auto_connect"), ("main/wifi_menu.cpp", "wifi_maintain"),
+                               ("main/wifi_menu.cpp", "run_startup_tasks"), ("main/home_menu.cpp", "background_tick"),
+                               ("main/home_menu.cpp", "power_resume")):
+            body = function_body(SRC[name], function)
+            with self.subTest(function=function):
+                self.assertIsNotNone(body)
+                self.assertNotIn("portal", body)
+        callers = sorted({name for name, code in SRC.items() if re.search(r"handle_portal_command\s*\(", code)})
+        self.assertEqual(callers, ["main/include/ssh_terminal.hpp", "main/portal_menu.cpp",
+                                   "main/ssh_terminal.cpp", "main/wifi_menu.cpp"])
+        fetchers = sorted({name for name, code in SRC.items() if re.search(r"portal::(?:fetch|probe)\s*\(", code)})
+        self.assertEqual(fetchers, ["main/portal_menu.cpp"], "pages load only in the portal worker")
+        worker = function_body(SRC["main/portal_menu.cpp"], "portal_worker")
+        self.assertIn("portal::probe(", worker)
+        self.assertIn("portal::fetch(", worker)
+
+    def test_nothing_from_a_page_is_saved(self):
+        for name in self.PORTAL_FILES:
+            with self.subTest(file=name):
+                self.assertNotRegex(SRC[name], r"settings_nvs|nvs_set|fopen|sdcard::|vault::put")
+
+    def test_page_state_wiped_when_the_sign_in_ends(self):
+        self.assertIn("portal_wipe();", function_body(SRC["main/profile_menu.cpp"], "wizard_reset"))
+        wipe = function_body(SRC["main/portal_menu.cpp"], "portal_wipe")
+        self.assertIn("portal::wipe(portal_page)", wipe)
+        self.assertIn("portal_cookies.wipe()", wipe)
+        self.assertIn("mbedtls_platform_zeroize", SRC["main/portal_client.cpp"])
+
+    def test_portal_parser_is_host_tested(self):
+        parser = SRC["main/portal.cpp"] + SRC["main/include/portal.hpp"]
+        self.assertNotRegex(parser, r'#include\s*"(?:esp_|freertos|lvgl)')
+        self.assertIn("portal.cpp", repo.read("test", "host", "CMakeLists.txt"))
 
 
 # The same options check_firmware.py enforces on the sdkconfig the build generates

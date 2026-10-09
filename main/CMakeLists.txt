@@ -16,6 +16,9 @@ set(SOURCES
     "home_menu.cpp"
     "chat_app.cpp"
     "openai_client.cpp"
+    "portal.cpp"
+    "portal_client.cpp"
+    "portal_menu.cpp"
     "audio.cpp"
 )
 

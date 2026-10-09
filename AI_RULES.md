@@ -4,7 +4,7 @@ SimplrSSH is firmware for the **LilyGO T-Deck / T-Deck Plus** (ESP32-S3, 240 MHz
 ~340 KB usable internal RAM, 8 MB PSRAM, 16 MB flash; 320x240 screen, small keyboard and
 trackball) and the **M5Stack Tab5 with the Tab5 Keyboard** (ESP32-P4, 360 MHz, 32 MB PSRAM,
 16 MB flash, WiFi on an ESP32-C6 co-processor; 1280x720 landscape touchscreen, 70-key
-keyboard). Its job: **configure WiFi, SSH into servers with common terminal-client features,
+keyboard). Its job: **configure WiFi (including a network's sign-in page), SSH into servers with common terminal-client features,
 and chat with ChatGPT by text or voice**. Every change should serve that job, on both boards.
 
 One source tree builds both: the IDF target picks the board (esp32s3 = T-Deck, esp32p4 =
@@ -30,8 +30,18 @@ only while no SSH session is open; in a session they go to the server.
   comfortably on the device, don't add it. Remove code that nothing calls.
 - No telemetry, analytics, OTA, web servers, access-point mode, Bluetooth, or background
   network traffic. The only outbound connections allowed are: the WiFi network the user
-  picks, DNS for the host the user typed, that SSH server, and api.openai.com - only while
-  the user is using ChatGPT, with their own API key, over verified TLS (CA bundle).
+  picks, DNS for the host the user typed, that SSH server, api.openai.com - only while
+  the user is using ChatGPT, with their own API key, over verified TLS (CA bundle) - and the
+  WiFi network's sign-in page (captive portal) - only while the user runs `portal` (WiFi
+  menu: Sign in): one plain-HTTP probe to `connectivitycheck.gstatic.com/generate_204` (the
+  network answers it with its page; 204 means online; if that name doesn't resolve, the
+  network's own gateway at `http://<gateway>/`), then only the pages, links and form targets
+  the user picks from that page, HTTPS verified with the CA bundle. Never probe on
+  your own (not after connecting, not to "check" the internet).
+- Sign-in pages are untrusted input from whatever network was joined: no scripts run (only a
+  literal meta-refresh or script redirect is followed), text reaches the screen as printable
+  ASCII, and the page, what was typed into it and its cookies live in RAM only and are wiped
+  when the sign-in ends. Nothing from it is saved.
 - Prefer ESP-IDF / LVGL / libssh2 facilities over new dependencies. New components must be
   pinned (`main/idf_component.yml`, with a `target ==` rule if only one board uses them, and
   the board's lock: `dependencies.lock` or `dependencies.lock.esp32p4`) and reviewed for
@@ -47,12 +57,14 @@ only while no SSH session is open; in a session they go to the server.
   let the heap place allocations >16 KB there). Internal RAM is for stacks, DMA and small objects.
 - No large arrays on task stacks. Stacks: keypad 8 KB (runs all terminal work; also polls the
   Tab5 keyboard), SSH receive 8 KB, trackball 2 KB (T-Deck only; only queues events), ChatGPT
-  worker 10 KB (created per request and deleted when done). Don't add long-lived tasks.
-- Blocking network calls (OpenAI) never run in the UI task; workers touch LVGL only under
+  worker 10 KB (created per request and deleted when done), sign-in page worker 10 KB (same).
+  Don't add long-lived tasks.
+- Blocking network calls (OpenAI, sign-in pages) never run in the UI task; workers touch LVGL only under
   `bsp_display_lock()` and check `chat_generation` so a closed view is never used.
 - Audio (I2S mic/speaker) is started only while used; recordings go to PSRAM.
 - Bound every collection that grows from user or network input (history 100, profiles 20,
-  networks 20, SD keys 8 / 48 KB, terminal text ~6 KB, Tab5 SSH scrollback 1000 lines in PSRAM).
+  networks 20, SD keys 8 / 48 KB, terminal text ~6 KB, Tab5 SSH scrollback 1000 lines in PSRAM,
+  sign-in pages 192 KB in PSRAM / 60 fields / 30 cookies).
 - Avoid heap churn in hot paths (SSH receive/render loop): reuse buffers, don't build
   temporary strings per byte.
 
@@ -160,6 +172,7 @@ only while no SSH session is open; in a session they go to the server.
 | `main/known_hosts.cpp` | Host key verification (TOFU), `hosts` command |
 | `main/profile_menu.cpp` | Menu/wizard plumbing, SSH profiles |
 | `main/wifi_menu.cpp` | WiFi wizard, saved networks, auto-connect |
+| `main/portal.cpp`, `main/portal_client.cpp`, `main/portal_menu.cpp` | WiFi sign-in pages (captive portal): HTML forms, links, URLs and cookies (host-tested); HTTP client (probe, redirects, verified TLS); the `portal` menu |
 | `main/vault_menu.cpp`, `main/secret_vault.cpp` | Encrypted password storage (NVS), optional PIN |
 | `main/connection_profiles.cpp` | NVS storage for profiles and networks |
 | `main/settings_nvs.cpp` | Picks and opens the settings partition (`nvs` or a launcher's `simplrssh`) |

@@ -74,9 +74,10 @@ class Settings(unittest.TestCase):
 
 
 class Tasks(unittest.TestCase):
-    # AI_RULES.md: keypad 8 KB, SSH receive 8 KB, trackball 2 KB, ChatGPT worker 10 KB
+    # AI_RULES.md: keypad 8 KB, SSH receive 8 KB, trackball 2 KB, ChatGPT worker 10 KB,
+    # sign-in page worker 10 KB
     STACKS = {"keypad_task": 8192, "trackball_task": 2048, "ssh_rx": 8192, "chat": "WORKER_STACK",
-              "models": "WORKER_STACK"}
+              "models": "WORKER_STACK", "portal": 10240}
 
     def test_task_stacks_match_budget(self):
         found = {}
@@ -108,6 +109,15 @@ class Bounds(unittest.TestCase):
         self.assertIn(f"networks {networks}", bounds)
         self.assertIn(f"SD keys {keys} / {key_kb} KB", bounds)
         self.assertIn(f"terminal text ~{scrollback // 1024} KB", bounds)
+
+    def test_sign_in_page_bounds(self):
+        header = repo.read("main", "include", "portal.hpp")
+        rules = repo.read("AI_RULES.md").replace("\n", " ")
+        page_kb = int(re.search(r"MAX_PAGE_BYTES = (\d+) \* 1024;", header).group(1))
+        fields = int(re.search(r"MAX_FIELDS = (\d+);", header).group(1))
+        cookies = int(re.search(r"MAX_COOKIES = (\d+);", header).group(1))
+        self.assertIn(f"sign-in pages {page_kb} KB in PSRAM / {fields} fields / {cookies} cookies", rules)
+        self.assertIn("MALLOC_CAP_SPIRAM", SRC["main/portal_client.cpp"])
 
 
 class Logging(unittest.TestCase):

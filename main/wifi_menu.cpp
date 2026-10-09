@@ -100,8 +100,10 @@ void SSHTerminal::handle_wifi_command(const std::string& command)
         }
     } else if (sub == "off") {
         disconnect_wifi();
+    } else if (sub == "portal" || sub == "signin") {
+        handle_portal_command("portal");
     } else {
-        append_text("Usage: wifi [scan|saved|list|forget|off]\n");
+        append_text("Usage: wifi [scan|saved|list|forget|portal|off]\n");
         append_text("  'wifi' alone opens the menu\n");
     }
 }
@@ -209,6 +211,10 @@ void SSHTerminal::wifi_connect_with(const std::string& password, bool from_vault
     }
 
     append_text(("Connected to " + ssid + ".\n").c_str());
+    if (wizard.wifi_open) {
+        append_text("Open network: if it has a sign-in page (cafe, hotel), choose 'Sign in' in\n"
+                    "the WiFi menu or type 'portal'.\n");
+    }
     // Every network that connects is saved (already saved with this password: nothing to do)
     if (!(from_vault && find_ssid(saved_networks, ssid) >= 0)) {
         wifi_remember_network(ssid, password, wizard.wifi_hidden);
@@ -387,9 +393,10 @@ bool SSHTerminal::wifi_step_prompt()
                         " 2) Connect to saved network\n"
                         " 3) Forget saved network\n"
                         " 4) Disconnect\n"
+                        " 5) Sign in (cafe/hotel web page)\n"
                         " 0) Back\n");
-            text = "Select [0-4]: ";
-            wizard.choices = {"1", "2", "3", "4", "0"};
+            text = "Select [0-5]: ";
+            wizard.choices = {"1", "2", "3", "4", "5", "0"};
             break;
 
         case WizardStep::WifiPickScan: {
@@ -473,6 +480,9 @@ bool SSHTerminal::wifi_step_input(const std::string& raw_input, const std::strin
             } else if (input == "4") {
                 disconnect_wifi();
                 wizard_prompt();
+            } else if (input == "5") {
+                handle_portal_command("portal");
+                show_menu_after(WizardStep::WifiMenu);
             } else if (input == "0") {
                 go_home();
             } else {

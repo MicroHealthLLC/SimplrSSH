@@ -2,8 +2,9 @@
 
 SimplrSSH is a handheld SSH client for the LilyGO T-Deck (ESP32-S3) and the M5Stack Tab5
 (ESP32-P4, WiFi through an ESP32-C6 co-processor), built from one source tree. Its job is to join a
-WiFi network the user picks, open SSH sessions to servers the user enters, and - only when
-the user opens ChatGPT with their own API key - talk to api.openai.com. It should talk to
+WiFi network the user picks, open SSH sessions to servers the user enters, talk to
+api.openai.com only when the user opens ChatGPT with their own API key, and load the WiFi
+network's sign-in page (captive portal) only when the user runs `portal`. It should talk to
 nothing else.
 
 ## Reporting a vulnerability
@@ -20,6 +21,7 @@ vulnerability") rather than a public issue.
 | Secrets in use | Shoulder surfing, serial logs, command history | Masked input and echo, no secret logging, secrets kept out of history, buffers wiped after use |
 | OpenAI API key | Leaking through backups, logs or plain text | Stored in the vault like other passwords (PIN-protected if set); sent only to api.openai.com over TLS verified with the ESP-IDF CA bundle |
 | Chat content and voice | Unexpected destinations | Sent only to OpenAI, only while the user is in ChatGPT; the chat stays in RAM (not saved); recordings are freed after transcription |
+| Typed sign-in details (name, email, room or voucher code) and portal cookies | Being kept or sent elsewhere | Sent only to the form's own address, chosen by the page the user is on; kept in RAM only and wiped when the sign-in ends; never logged or saved. Password fields are masked; on a page without HTTPS the user is warned before typing one |
 | Device | Unexpected network exposure | Station-only WiFi (no access point / DHCP server), IPv4 only, no listening sockets, no telemetry/OTA/cloud |
 
 Not in scope: an attacker with physical access *and* time to brute-force a short PIN offline
@@ -151,6 +153,22 @@ Hardware behaviour on the Tab5 has not been confirmed on a device yet.
 | Change | Security review |
 |---|---|
 | Ctrl+Del (Tab5) and the side panel's **Menu** button (replaces **Exit SSH**) end an SSH session, close ChatGPT or cancel a menu from any screen | Ctrl+Del is handled on the device and never sent to the server. The half-typed input line is wiped (`vault::wipe`), as it may hold a password; a connection waiting for host-key trust or a passphrase is torn down like Cancel, wiping its pending credentials |
+
+### WiFi sign-in pages, captive portal (2026-10-09)
+
+Cafes and hotels often let a device online only after it accepts terms on a web page. `portal`
+(WiFi menu: **5) Sign in**) shows that page as a numbered menu. Rules change (AI_RULES.md,
+Scope): sign-in pages are now an allowed destination, only while the user runs `portal`.
+
+| Change | Security review |
+|---|---|
+| New outbound traffic: a plain-HTTP request to `connectivitycheck.gstatic.com/generate_204` (if that name doesn't resolve: the network's own gateway, `http://<gateway>/`), then the pages, links and form targets the user picks | Only on the user's request, never automatically (CI guard). Plain HTTP is used for the probe alone, because a portal can only intercept unencrypted traffic; a 204 answer means the internet works. Every HTTPS page is verified with the ESP-IDF CA bundle: a portal with a self-signed certificate fails to load rather than being trusted. Redirects are followed by hand, at most 8, only to http(s) URLs without `user@` parts (IPv4 / DNS names only) |
+| HTML parser for untrusted pages (`main/portal.cpp`, host-tested with hostile and truncated input under ASan/UBSan) | No scripts run; only a literal `location = "..."` or meta refresh is followed, and only on a page with nothing to fill in. Body capped at 192 KB in PSRAM (zeroed before it is freed); at most 8 forms, 60 fields, 40 options per list, 12 links, 1500 characters of text, 512-byte values, 1 KB URLs. Text reaches the screen as printable ASCII (no control or escape characters). `javascript:`, `data:` and other schemes are dropped |
+| Cookies | Kept in RAM for the sign-in only, at most 30 of 1 KB; a cookie is only accepted for the host that set it or its parent domain (not a bare top-level domain), `Secure` cookies only go over HTTPS, and the jar is wiped when the sign-in ends |
+| A worker task (10 KB stack) per page load | Created per request and deleted when done, like the ChatGPT worker; it touches the menu only under the display lock and drops its result if the user left the sign-in (generation counter) |
+
+Not handled by design: pages that need JavaScript (common on hotel and chain portals). Use a phone
+hotspot for those. Hardware behaviour has not been confirmed on a T-Deck or Tab5 yet.
 
 ### Known residual risks
 

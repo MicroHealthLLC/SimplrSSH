@@ -19,6 +19,7 @@
 #include "battery_measurement.hpp"
 #include "connection_profiles.hpp"
 #include "openai_client.hpp"
+#include "portal.hpp"
 #include "term_screen.hpp"
 
 class SSHTerminal
@@ -108,7 +109,9 @@ private:
         // Home, security and power menus (home_menu.cpp)
         HomeMenu, SecurityMenu, PowerMenu,
         // ChatGPT (chat_app.cpp)
-        ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModelWait, ChatModel, ChatModelOther
+        ChatMenu, ChatKeySource, ChatKey, ChatKeyDelete, ChatModelWait, ChatModel, ChatModelOther,
+        // WiFi sign-in page, captive portal (portal_menu.cpp)
+        PortalWait, PortalPage, PortalField, PortalOption
     };
     enum class WizardAction { None, Connect, Add, Edit, Delete, WifiConnectSaved, WifiForget, SetPin, ChangePin, RemovePin };
     enum class SecretChange { Keep, Set, Clear };
@@ -233,6 +236,16 @@ private:
     int pty_rows = 24;
     bool wifi_quiet_connect = false;   // Background reconnect: no progress dots
 
+    // WiFi sign-in page (portal_menu.cpp): only while the user is signing in. The page, what
+    // was typed into it and its cookies live in RAM and are wiped when it ends (wizard_reset).
+    struct PortalJob;
+    portal::Page portal_page;
+    portal::Cookies portal_cookies;
+    int portal_field = -1;                  // Field being filled in or chosen
+    bool portal_show_text = true;           // The next page prompt shows the page's text too
+    volatile bool portal_busy = false;      // A worker is loading a page
+    volatile uint32_t portal_generation = 0;  // Bumped when the sign-in ends: late pages are dropped
+
     // Full-screen SSH terminal (board::term_screen(), NULL on the T-Deck): shown while SSH is
     // connected; then every key goes to the server (raw_keys())
     TermScreen* term = NULL;
@@ -319,6 +332,18 @@ private:
     bool wifi_auto_connect(bool quiet);
     bool wifi_step_prompt();
     bool wifi_step_input(const std::string& raw, const std::string& input);
+
+    // WiFi sign-in page, captive portal (portal_menu.cpp)
+    void handle_portal_command(const std::string& command);
+    void portal_load(const portal::Request* request);
+    static void portal_worker(void* param);
+    void portal_done(PortalJob& job);
+    void portal_activate(const portal::Item& item);
+    void portal_send(int form, int submitter);
+    void portal_wipe();
+    bool portal_field_masked() const;
+    bool portal_step_prompt();
+    bool portal_step_input(const std::string& raw, const std::string& input);
     
     // SSH host key verification, trust on first use (known_hosts.cpp)
     enum class HostKeyStatus { Match, Unknown, Mismatch, Error };

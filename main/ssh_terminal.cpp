@@ -671,6 +671,9 @@ void SSHTerminal::execute_command(const std::string& cmd)
     else if (cmd == "storage" || cmd.rfind("storage ", 0) == 0) {
         handle_storage_command(cmd);
     }
+    else if (!ssh_connected && cmd == "portal") {
+        handle_portal_command(cmd);
+    }
     else if (cmd.rfind("connect ", 0) == 0) {
         // Parse arguments with support for quoted strings (for SSIDs/passwords with spaces)
         std::vector<std::string> args;
@@ -826,6 +829,7 @@ void SSHTerminal::execute_command(const std::string& cmd)
         append_text((std::string("  chat - ChatGPT (") + board::HINT_TALK + " to talk)\n").c_str());
         append_text("  wifi - WiFi menu: scan, pick a network, save it\n");
         append_text("  wifi scan|saved|list|forget|off\n");
+        append_text("  portal - Sign in to the network's web page (cafe, hotel)\n");
         append_text("  connect - Scan and pick a WiFi network\n");
         append_text("  connect <SSID> <PASSWORD> - Connect to WiFi\n");
         append_text("    Use quotes for spaces: connect \"My WiFi\" password\n");

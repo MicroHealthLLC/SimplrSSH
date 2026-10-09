@@ -31,6 +31,7 @@ find_library(MBEDCRYPTO mbedcrypto REQUIRED)
 add_library(firmware STATIC
     ${MAIN_DIR}/command_redact.cpp
     ${MAIN_DIR}/connection_profiles.cpp
+    ${MAIN_DIR}/portal.cpp
     ${MAIN_DIR}/secret_vault.cpp
     ${MAIN_DIR}/settings_backup.cpp
     ${MAIN_DIR}/settings_nvs.cpp
@@ -45,6 +46,7 @@ target_link_libraries(firmware PUBLIC ${MBEDCRYPTO})
 add_executable(unit_tests test_main.cpp
     tests/test_command_redact.cpp
     tests/test_connection_profiles.cpp
+    tests/test_portal.cpp
     tests/test_secret_vault.cpp
     tests/test_tab5_keymap.cpp
     tests/test_vterm.cpp

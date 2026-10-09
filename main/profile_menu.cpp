@@ -61,6 +61,9 @@ static std::vector<std::string> numbered_choices(int count, bool with_zero)
 
 bool SSHTerminal::wizard_input_masked() const
 {
+    if (wizard.step == WizardStep::PortalField) {
+        return portal_field_masked();
+    }
     switch (wizard.step) {
         case WizardStep::Password:
         case WizardStep::KeyPassphrase:
@@ -96,7 +99,7 @@ void SSHTerminal::wizard_goto(WizardStep step)
 void SSHTerminal::wizard_prompt()
 {
     if (profile_step_prompt() || wifi_step_prompt() || vault_step_prompt() || host_step_prompt() ||
-        storage_step_prompt() || home_step_prompt() || chat_step_prompt()) {
+        storage_step_prompt() || home_step_prompt() || chat_step_prompt() || portal_step_prompt()) {
         return;
     }
 }
@@ -121,7 +124,7 @@ void SSHTerminal::wizard_handle_input(const std::string& raw_input)
     if (profile_step_input(raw_input, input) || wifi_step_input(raw_input, input) ||
         vault_step_input(raw_input, input) || host_step_input(raw_input, input) ||
         storage_step_input(raw_input, input) || home_step_input(raw_input, input) ||
-        chat_step_input(raw_input, input)) {
+        chat_step_input(raw_input, input) || portal_step_input(raw_input, input)) {
         return;
     }
 }
@@ -166,6 +169,7 @@ void SSHTerminal::wizard_reset()
     vault::wipe(wizard.secret);
     vault::wipe(wizard.pin);
     wizard = ProfileWizard();
+    portal_wipe();   // Leaving a sign-in page ends it
 }
 
 // ---------------------------------------------------------------------------

@@ -65,7 +65,7 @@ FORBIDDEN_SYMBOLS = [
     (r"esp_now_\w+", "ESP-NOW"),
 ]
 REQUIRED_SYMBOLS = [
-    ("esp_crt_bundle_attach", "TLS verification with the CA bundle (api.openai.com)"),
+    ("esp_crt_bundle_attach", "TLS verification with the CA bundle (api.openai.com, sign-in pages)"),
     ("libssh2_session_hostkey", "SSH host key check"),
     ("libssh2_hostkey_hash", "SSH host key fingerprint"),
     ("esp_netif_create_default_wifi_sta", "WiFi station mode"),

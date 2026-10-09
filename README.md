@@ -65,6 +65,7 @@ and tap **Menu** (the T-Deck's keyboard has no Ctrl key).
 1. **WiFi**: choose **1) WiFi** → **Scan and connect**, pick your network and type the
    password. It is saved, the menu comes back, and the device reconnects on its own from then
    on (after a restart too, also when it first asks for your PIN).
+   If the network has a sign-in page (cafe, hotel, airport), see *Sign-in pages* below.
 2. **Add a server**: choose **2) SSH servers** → **Add**. Enter a name, host, port (Enter for
    22) and username, then choose a password or an SSH key. Finish with **Save and connect**.
 3. **Trust the server**: on the first connection you are shown the server's key fingerprint.
@@ -115,6 +116,15 @@ OpenAI, and only while you use ChatGPT.
   sent as your message to the chat model you picked. If the microphone picks up nothing, the
   device says so and doesn't upload the recording. Press **Esc** (T-Deck: swipe left, then Esc)
   to stop a recording, a reply being written, or a reply being read aloud.
+- **Sign-in pages (captive portals)**: in a cafe or hotel, the WiFi may connect but let
+  nothing through until you accept its terms on a web page. Choose **1) WiFi** → **5) Sign in**
+  (or type `portal`). SimplrSSH loads that page and lists what's on it as a numbered menu:
+  pick a number to tick a checkbox (`[x]`), choose a radio button or list entry, type into a
+  field (Enter keeps it, `-` clears it), press a button (`[Connect]`) or follow a link. `t`
+  shows the page's text again, `r` starts over and checks the connection, `0` leaves. After a
+  form is sent it checks the internet and says *Signed in* once it works. It runs only when
+  you ask, nothing from the page is saved, and pages that need JavaScript (some hotel and
+  chain portals) can't work - accept on your phone and use its hotspot instead.
 - **Back up**: choose **4) Storage** → **Back up** to copy your settings to the SD card.
 - **Sleep**: choose **6) Power** → **Sleep**, or type `sleep`. The screen and WiFi turn off;
   press any key or touch the screen to wake it (T-Deck: the trackball works too). The key or
@@ -172,6 +182,11 @@ charges its battery over USB-C while SimplrSSH runs.
 ## Troubleshooting
 
 - **WiFi won't connect**: make sure the network is 2.4 GHz and shows up in the scan.
+- **WiFi connects but SSH or ChatGPT can't reach anything** (cafe, hotel): the network wants
+  you to sign in first. Use **1) WiFi** → **5) Sign in** (`portal`). *Nothing to fill in or
+  press here*: the page needs JavaScript; sign in on a phone and use its hotspot. *Can't reach
+  ... certificate*: the sign-in page uses a certificate the device can't verify, so it isn't
+  opened.
 - **SSH "Could not connect"**: the message says why. *Connection refused*: no SSH server on that
   port, or the server is blocking the device (for example fail2ban after failed logins).
   *No answer* / *no route*: wrong address, or the server isn't reachable from this WiFi (a
