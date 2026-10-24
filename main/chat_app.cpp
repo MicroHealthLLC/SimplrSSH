@@ -591,7 +591,11 @@ bool SSHTerminal::chat_record(int16_t*& pcm, size_t& samples, const char* releas
     size_t n = 0;
     int shown = -1;
     while (chat_recording && !chat_cancel && n < MAX_RECORD_SAMPLES) {
-        n += audio::mic_read(pcm + n, std::min<size_t>(1600, MAX_RECORD_SAMPLES - n));
+        size_t got = audio::mic_read(pcm + n, std::min<size_t>(1600, MAX_RECORD_SAMPLES - n));
+        if (got == 0) {
+            break;   // The microphone stopped delivering: end here rather than spin
+        }
+        n += got;
         int secs = n / audio::MIC_RATE;
         if (secs != shown) {
             shown = secs;
@@ -903,6 +907,7 @@ void SSHTerminal::dictate_job()
     }
     vault::wipe(heard);
     if (text.empty() || !bsp_display_lock(1000)) {
+        vault::wipe(text);
         return;
     }
     dictate_text = text;

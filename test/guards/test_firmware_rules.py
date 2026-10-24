@@ -90,6 +90,11 @@ class Tasks(unittest.TestCase):
     def test_no_busy_wait(self):
         self.assertEqual(grep(r"while\s*\(\s*(1|true)\s*\)\s*;"), [])
 
+    def test_recording_loop_ends_when_the_microphone_returns_nothing(self):
+        # mic_read() returns 0 on a read error; the loop would then spin without waiting
+        code = SRC["main/chat_app.cpp"]
+        self.assertRegex(code, r"size_t got = audio::mic_read\([^;]*;\s*if \(got == 0\) \{\s*break;")
+
 
 class Bounds(unittest.TestCase):
     def test_collection_bounds(self):
